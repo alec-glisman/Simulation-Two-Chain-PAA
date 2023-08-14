@@ -1,10 +1,10 @@
-# Polyelectrolyte Ion Adsorption
+# Simulation Two Chain PAA
 
-**Summary:** PLUMED-patched GROMACS molecular dynamics simulations repository used for my anti-scaling research project in the Wang Group.  
-**Authors:** [Alec Glisman](https://github.com/alec-glisman)  
+**Summary:** PLUMED-patched GROMACS molecular dynamics simulations repository used for my anti-scaling research project in the Wang Group at Caltech.
+**Authors:** [Alec Glisman](https://github.com/alec-glisman)
 **GitHub actions:**
-[![Code Linting](https://github.com/zgw-group/Polyelectrolyte-Ion-Adsorption/actions/workflows/code-linting.yml/badge.svg)](https://github.com/zgw-group/Polyelectrolyte-Ion-Adsorption/actions/workflows/code-linting.yml)
-[![Language Linting](https://github.com/zgw-group/Polyelectrolyte-Ion-Adsorption/actions/workflows/language-linting.yml/badge.svg)](https://github.com/zgw-group/Polyelectrolyte-Ion-Adsorption/actions/workflows/language-linting.yml)  
+[![Code Linting](https://github.com/alec-glisman/Simulation-Two-Chain-PAA/actions/workflows/code-linting.yml/badge.svg)](https://github.com/alec-glisman/Simulation-Two-Chain-PAA/actions/workflows/code-linting.yml)
+[![Language Linting](https://github.com/alec-glisman/Simulation-Two-Chain-PAA/actions/workflows/language-linting.yml/badge.svg)](https://github.com/alec-glisman/Simulation-Two-Chain-PAA/actions/workflows/language-linting.yml)  
 **Third-party services:**
 [![wakatime](https://wakatime.com/badge/github/alec-glisman/gromacs.svg)](https://wakatime.com/badge/github/alec-glisman/gromacs)
 
