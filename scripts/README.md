@@ -39,14 +39,12 @@ These scripts are called first in the main simulation pipeline script, [`run`](.
 - [`system_preparation`](./md-setup/system_preparation): Bash script for preparing a Gromacs simulation from atom `.pdb` files and Gromacs format force-field directories.
 After system preparation, the system is energy minimized before moving to equilibration `mdrun` commands.
 - [`equilibration`](./md-setup/equilibration): Bash script for performing equilibration of a Gromacs simulation.
-Systems are first NVT equilibrated for 10 ns to constant temperature and then NPT equilibrated for 10 ns to constant pressure.
-For production NVT ensembles, the average density is calculated using the last 4 ns of the NPT equilibration trajectory and the frame closest to the average density is used as the starting frame for the next simulation. The final NVT equilibration lasts 150 ns. For production NPT ensembles, the trajectory is extended to a total integration time of 150 ns.
 
 ## [`md-production`](./md-production)
 
 This directory contains Bash scripts that are used to run Gromacs production simulations.
 The scripts take as input a Gromacs simulation prepared by the scripts in the [`md-setup`](./md-setup) directory.
-The scripts in this directory sometimes perform basic analysis of the simulation output, but full data analysis and visualization is performed in the separate Gromacs-Data-Analysis repository.
+The scripts in this directory sometimes perform basic analysis of the simulation output, but full data analysis and visualization is performed in a separate repository.
 Each script is named for the type of simulation it performs and further information is provided in the comments of each script.
 
 ## [`rsync`](./rsync)
