@@ -46,13 +46,3 @@ This directory contains Bash scripts that are used to run Gromacs production sim
 The scripts take as input a Gromacs simulation prepared by the scripts in the [`md-setup`](./md-setup) directory.
 The scripts in this directory sometimes perform basic analysis of the simulation output, but full data analysis and visualization is performed in a separate repository.
 Each script is named for the type of simulation it performs and further information is provided in the comments of each script.
-
-## [`rsync`](./rsync)
-
-This directory contains Bash scripts that are used to synchronize data between various computational devices.
-The files can be frequently changed and are not called by the main [`run`](./run) script and should be called directly by the user.
-
-## [`slurm`](./slurm)
-
-This directory contains Bash scripts that are used to submit jobs to the SLURM job scheduler.
-They are called by production scripts that need to submit successive jobs to SLURM.
