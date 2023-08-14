@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+# Created by Alec Glisman (GitHub: @alec-glisman) on March 7th, 2022
+#
+
+# built-in shell options
+set -o errexit # exit when a command fails. Add || true to commands allowed to fail
+set -o nounset # exit when script tries to use undeclared variables
+# bash extended options
+shopt -s extglob
+
+# MacOSX sed is different from Linux sed
+if [[ $OSTYPE == 'darwin'* ]]; then
+    sed_exe='gsed'
+else
+    sed_exe='sed'
+fi
+
+# ANCHOR: Script variables
+# path variables
+if [[ "${INPUT_DATA_DIR}" == '-1' ]]; then
+    base_dir="${REPO_BASE_DIR}/data/${TAG}"
+else
+    base_dir="${INPUT_DATA_DIR}"
+fi
+
+# file paths
+input_dir="${base_dir}/1-system-preparation/4-em"
+mdp_base_path="${PARAMETERS_DIR}"
+
+if [[ ! "${UMBRELLA_FLAG}" ]]; then
+    output_dir="${base_dir}/2-md-equilibration"
+    mdp_base_path="${mdp_base_path}/molecular-dynamics"
+    mdp_nvt_file="${mdp_base_path}/nvt_eqbm_10ns.mdp"
+
+    if [[ "${PRODUCTION_ENSEMBLE}" == "nvt" ]]; then
+        mdp_npt_file="${mdp_base_path}/npt_eqbm_10ns.mdp"
+        mdp_nvt_final_file="${mdp_base_path}/nvt_eqbm_100ns.mdp"
+
+    elif [[ "${PRODUCTION_ENSEMBLE}" == "npt" ]]; then
+        mdp_npt_file="${mdp_base_path}/npt_eqbm_100ns.mdp"
+        mdp_nvt_final_file=''
+
+    else
+        echo "ERROR: Unknown production ensemble: ${PRODUCTION_ENSEMBLE}"
+        exit 1
+    fi
+
+else
+    output_dir="${base_dir}/2-pull-equilibration"
+    mdp_base_path="${mdp_base_path}/umbrella-sampling"
+    mdp_nvt_file="${mdp_base_path}/nvt_posres_harmonic_10ns.mdp"
+
+    if [[ "${PRODUCTION_ENSEMBLE}" == "nvt" ]]; then
+        mdp_npt_file="${mdp_base_path}/npt_harmonic_10ns.mdp"
+        mdp_nvt_final_file="${mdp_base_path}/nvt_harmonic_200ns.mdp"
+
+    elif [[ "${PRODUCTION_ENSEMBLE}" == "npt" ]]; then
+        mdp_npt_file="${mdp_base_path}/npt_harmonic_200ns.mdp"
+        mdp_nvt_final_file=''
+
+    else
+        echo "ERROR: Unknown production ensemble: ${PRODUCTION_ENSEMBLE}"
+        exit 1
+    fi
+
+fi
+
+# make parent directory
+mkdir -p "${output_dir}"
+cd "${output_dir}" || exit
+
+# pdb input structure file
+pdb_file="packmol_chain.pdb"
+# pdb file for molinfo
+if [[ "${N_CHAINS}" == 1 ]]; then
+    pdb_input_file="${base_dir}/1-system-preparation/1-structure/packmol-one-chain.pdb"
+elif [[ "${N_CHAINS}" == 2 ]]; then
+    pdb_input_file="${base_dir}/1-system-preparation/1-structure/packmol-two-chain.pdb"
+else
+    echo "error: N_CHAINS must be 1 or 2"
+    exit 1
+fi
+cp "${pdb_input_file}" "${pdb_file}"
+
+# plumed input file if 2 chains and METAD
+if [[ "${METADYNAMICS_FLAG}" ]] || [[ "${HREMD_FLAG}" ]]; then
+    echo "  - Setting up plumed input file for upper walls for METAD/HREMD"
+
+    if [[ "${N_CHAINS}" == 2 ]]; then
+        plumed_template="${REPO_BASE_DIR}/parameters/plumed-mdrun/metad-2chain-cv-comdist/two_chain_md.dat"
+        plumed_filename="plumed.dat"
+        cp "${plumed_template}" "${plumed_filename}"
+
+        # replace template parameters on plumed input file
+        "${sed_exe}" -i "s/{pdb_file}/${pdb_file}/g" "${plumed_filename}"
+        "${sed_exe}" -i "s#{python_exe}#${PYTHON_BIN}#g" "${plumed_filename}"
+        "${sed_exe}" -i "s/{TEMPERATURE_K}/${TEMPERATURE_K}/g" "${plumed_filename}"
+        "${sed_exe}" -i "s/{WALL_MIN}/${WALL_MIN}/g" "${plumed_filename}"
+        "${sed_exe}" -i "s/{WALL_MAX}/${WALL_MAX}/g" "${plumed_filename}"
+        "${sed_exe}" -i "s/{WALL_FORCE_CONST}/${WALL_FORCE_CONST}/g" "${plumed_filename}"
+    fi
+else
+    plumed_filename=""
+fi
+
+# log paths
+log_filename="standard_out_and_error.log"
+touch "${log_filename}"
+
+# copy force field
+cp -rpn "${base_dir}/1-system-preparation/${FORCE_FIELD_NAME}.ff" .
+
+echo ""
+echo "Starting equilibration..."
+
+# ANCHOR: NVT equilibration
+echo "  - NVT equilibration"
+{
+    gmx_mdrun_pipeline "${GMX_EXE}" \
+        "polyelectrolyte_em" "${mdp_nvt_file}" "${input_dir}" \
+        "nvt_eqbm" "${output_dir}" "1-nvt" \
+        "${TEMPERATURE_K}" "${PBC_ATOM_CHAIN_A}" "${PBC_ATOM_CHAIN_B}" \
+        "0" "${CPU_THREADS}" "${PIN_OFFSET}" "${GPU_IDS}"
+} >>"${log_filename}" 2>&1
+
+# ANCHOR: NPT equilibration
+echo "  - NPT equilibration"
+if [[ "${PRODUCTION_ENSEMBLE}" == "npt" ]] && [[ -n "${plumed_filename}" ]]; then
+    {
+        echo " - Final NPT equilibration with plumed ${plumed_filename}"
+        gmx_mdrun_pipeline "${GMX_EXE}" \
+            "nvt_eqbm" "${mdp_npt_file}" "${output_dir}" \
+            "npt_eqbm" "${output_dir}" "2-npt" \
+            "${TEMPERATURE_K}" "${PBC_ATOM_CHAIN_A}" "${PBC_ATOM_CHAIN_B}" \
+            "0" "${CPU_THREADS}" "${PIN_OFFSET}" "${GPU_IDS}" \
+            --p "${plumed_filename}"
+    } >>"${log_filename}" 2>&1
+else
+    {
+        echo " - NPT equilibration without plumed"
+        gmx_mdrun_pipeline "${GMX_EXE}" \
+            "nvt_eqbm" "${mdp_npt_file}" "${output_dir}" \
+            "npt_eqbm" "${output_dir}" "2-npt" \
+            "${TEMPERATURE_K}" "${PBC_ATOM_CHAIN_A}" "${PBC_ATOM_CHAIN_B}" \
+            "0" "${CPU_THREADS}" "${PIN_OFFSET}" "${GPU_IDS}"
+    } >>"${log_filename}" 2>&1
+fi
+
+# ANCHOR: NVT equilibration
+if [[ "${PRODUCTION_ENSEMBLE}" == "nvt" ]]; then
+
+    # check if output gro file already exists
+    if [[ ! -f "${output_dir}/npt_eqbm.gro" ]]; then
+        echo "  - Picking frame with nearest density to average of last 60% of data."
+        {
+            # Choose frame with density closest to average
+            python3 "${REPO_BASE_DIR}/python/mean_frame_xvg_2_col.py" \
+                --xvg_filename "${output_dir}/2-npt/analysis-npt_eqbm/density.xvg" \
+                --xtc_filename "${output_dir}/2-npt/npt_eqbm.xtc" \
+                --gro_filename "${output_dir}/npt_eqbm.gro" \
+                --percentile '0.4'
+        } >>"${log_filename}" 2>&1
+    else
+        echo " - npt_eqbm.gro already exists. Skipping frame picking."
+    fi
+
+    echo "  - NVT equilibration"
+    if [[ -n "${plumed_filename}" ]]; then
+        {
+            echo "  - Final NVT equilibration with plumed ${plumed_filename}"
+            gmx_mdrun_pipeline "${GMX_EXE}" \
+                "npt_eqbm" "${mdp_nvt_final_file}" "${output_dir}" \
+                "nvt_eqbm_final" "${output_dir}" "3-nvt" \
+                "${TEMPERATURE_K}" "${PBC_ATOM_CHAIN_A}" "${PBC_ATOM_CHAIN_B}" \
+                "0" "${CPU_THREADS}" "${PIN_OFFSET}" "${GPU_IDS}" \
+                --plumed "${plumed_filename}"
+        } >>"${log_filename}" 2>&1
+    else
+        {
+            echo "  - Final NVT equilibration without plumed"
+            gmx_mdrun_pipeline "${GMX_EXE}" \
+                "npt_eqbm" "${mdp_nvt_final_file}" "${output_dir}" \
+                "nvt_eqbm_final" "${output_dir}" "3-nvt" \
+                "${TEMPERATURE_K}" "${PBC_ATOM_CHAIN_A}" "${PBC_ATOM_CHAIN_B}" \
+                "0" "${CPU_THREADS}" "${PIN_OFFSET}" "${GPU_IDS}"
+        } >>"${log_filename}" 2>&1
+    fi
+fi

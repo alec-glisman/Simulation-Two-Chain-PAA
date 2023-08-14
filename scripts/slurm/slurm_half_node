@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Created by Alec Glisman (GitHub: @alec-glisman) on June 2nd, 2022
+
+# SECTION: Slurm configuration
+# Node configuration
+#SBATCH --account=dow            # OPTIONS: [zgw, dow, admin]
+#SBATCH --partition=all      # OPTIONS: [login, burst, compute-zgw, compute-dow]
+#SBATCH --qos=dow                # OPTIONS: [normal, zgw, dow, debug, admin]
+#SBATCH --nodes=1                # number of nodes (limited to 1 maximum on all nodes)
+#SBATCH --ntasks=16              # number of processor cores (i.e. tasks) across all nodes (max: ln 8, cn 32)
+#SBATCH --gres=gpu:1             # number of GPUs (ln 1 3070Ti, cn 2 3080Ti)
+#SBATCH --gpu-bind=closest       # bind each task to the GPU(s) which are closest
+#SBATCH --mem=2G                 # amount of RAM (64 Gb total on each node)
+
+# Job information
+#SBATCH --job-name=slurm-half-node-helper   # job name
+#SBATCH --time=7-00:00:00                   # walltime (max: ln 1 day, cn 7 days)
+
+# Email notification
+#SBATCH --mail-user=slurm.notifications@gmail.com   # email address
+#SBATCH --mail-type=BEGIN
+#SBATCH --mail-type=END
+#SBATCH --mail-type=FAIL
+
+# Runtime I/O
+#SBATCH -o submission/logs/slurm-jobid_%j-node_%N-%x.out # STDOUT
+#SBATCH -e submission/logs/slurm-jobid_%j-node_%N-%x.err # STDERR
+# !SECTION
+
+# SECTION: Bash options and error handling
+# built-in shell options
+set -o errexit # exit when a command fails. Add || true to commands allowed to fail
+set -o nounset # exit when script tries to use undeclared variables
+# !SECTION
+
+# SECTION: System setup
+# convert input strings to arrays
+IFS=' ' read -r -a commands_array <<<"$COMMANDS"
+IFS=' ' read -r -a gpu_id_array <<<"$GPU_IDS"
+IFS=' ' read -r -a pin_offset_array <<<"$PIN_OFFSETS"
+
+echo "COMMANDS: ${COMMANDS}"
+echo "commands_array"
+echo "${commands_array[@]}"
+echo ""
+
+echo "GPU_IDS: ${GPU_IDS}"
+echo "gpu_id_array"
+echo "${gpu_id_array[@]}"
+echo ""
+
+echo "PIN_OFFSETS: ${PIN_OFFSETS}"
+echo "pin_offset_array"
+echo "${pin_offset_array[@]}"
+echo ""
+# !SECTION
+
+# SECTION: Computations
+parallel --link --delay '1' --keep-order \
+    GPU_IDS="{2}" PIN_OFFSET="{3}" \
+    "{1}" \
+    ::: "${commands_array[@]}" ::: "${gpu_id_array[@]}" ::: "${pin_offset_array[@]}"
+# !SECTION

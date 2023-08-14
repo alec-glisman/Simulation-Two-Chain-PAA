@@ -1,0 +1,102 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "[Release] GROMACS Configure",
+            "type": "shell",
+            "options": {
+                "cwd": "${workspaceFolder}/gromacs-2022.3",
+                "env": {
+                    "CLICOLOR_FORCE": "0"
+                },
+            },
+            "command": "cmake",
+            "args": [
+                "-G",
+                "Unix Makefiles",
+                "-B",
+                "${workspaceFolder}/gromacs-2022.3/build/Release",
+                "-DCMAKE_EXPORT_COMPILE_COMMANDS=True",
+                "-DCMAKE_BUILD_TYPE=Release",
+                "-DCMAKE_C_COMPILER=gcc-11",
+                "-DCMAKE_CXX_COMPILER=g++-11",
+                "-DGMX_MPI=on",
+                "-DGMX_GPU=CUDA",
+                "-DGMX_EXTERNAL_BLAS=on",
+                "-DGMX_EXTERNAL_LAPACK=on",
+                "-DGMX_SIMD=AVX2_128",
+                "-DCMAKE_INSTALL_PREFIX=${workspaceFolder}/install/Release",
+                "-DGMX_FFT_LIBRARY=fftw3",
+                "-DREGRESSIONTEST_DOWNLOAD=ON"
+            ],
+            "problemMatcher": [
+                "$gcc"
+            ]
+        },
+        {
+            "label": "[Release] GROMACS Build",
+            "type": "shell",
+            "options": {
+                "cwd": "${workspaceFolder}/gromacs-2022.3",
+                "env": {
+                    "CLICOLOR_FORCE": "0"
+                },
+            },
+            "command": "cmake",
+            "args": [
+                "--build",
+                "build/Release",
+                "-j24"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": [
+                "$gcc"
+            ]
+        },
+        {
+            "label": "[Release] GROMACS Test",
+            "type": "shell",
+            "options": {
+                "cwd": "${workspaceFolder}/gromacs-2022.3/build/Release",
+                "env": {
+                    "CLICOLOR_FORCE": "0"
+                },
+            },
+            "command": "make",
+            "args": [
+                "-j24",
+                "check"
+            ],
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "dependsOn": "[Release] GROMACS Build",
+            "problemMatcher": [
+                "$gcc"
+            ]
+        },
+        {
+            "label": "[Release] GROMACS Install",
+            "type": "shell",
+            "options": {
+                "cwd": "${workspaceFolder}/gromacs-2022.3/build/Release",
+                "env": {
+                    "CLICOLOR_FORCE": "0"
+                },
+            },
+            "command": "make",
+            "args": [
+                "-j24",
+                "install"
+            ],
+            "dependsOn": "[Release] GROMACS Build",
+            "problemMatcher": [
+                "$gcc"
+            ]
+        }
+    ]
+}

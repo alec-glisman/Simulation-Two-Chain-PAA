@@ -1,0 +1,25 @@
+# This is a Spack environment file.
+#
+# We have chosen versions closest to the ones used in the repository
+# project, but spack does not have all versions on the packages
+# we use. Results should be reproducible with other versions.
+#
+# NOTE: We patch `share/top/residuetypes.dat` directory for our custom
+# residue names on acrylic acid. This is not included in the spack
+# environment file and must be modified manually.
+#
+# Used for env "md"
+spack:
+  specs:
+    - git@2.40.0
+    - tmux@3.3a
+    - gcc@11.4.0
+    - openmpi@4.1.5
+    - cmake@3.26.3
+    - cuda@11.8.0
+    - python@3.11.2
+    - packmol@20.0.0
+    - plumed@2.8.1
+    - gromacs@2022.3
+  view: true
+  concretization: together

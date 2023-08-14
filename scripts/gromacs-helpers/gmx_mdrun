@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# Created by Alec Glisman (GitHub: @alec-glisman) on April 6th, 2022
+
+# built-in shell options
+set -o errexit # exit when a command fails. Add || true to commands allowed to fail
+set -o nounset # exit when script tries to use undeclared variables
+# bash extended options
+shopt -s extglob
+
+# input checking
+if [[ "$#" -lt 9 ]]; then
+    echo "Error: gmx_mdrun correct arguments not supplied"
+    echo "gmx_mdrun [gmx_executable] \ "
+    echo "    [simulation_dir] [input_simulation_name] [output_simulation_name] [parameter_file] \ "
+    echo "    [num_warnings] [cpu_threads] [pin_offset] [gpu_ids] \ "
+    echo "    [-p plumed_std_in]"
+    exit 1
+fi
+
+# gmx mdrun parameters
+gmx_exe="${1}"
+simulation_dir="${2}"
+input_simulation_name="${3}"
+output_simulation_name="${4}"
+parameter_file="${5}"
+num_warnings="${6}"
+
+# hardware
+cpu_threads="${7}" # OPTIONS: {Desktop: 24, Stokes: 16, Coil: 8}
+pin_offset="${8}"  # offset from 0 of first cpu thread to pin for simulation
+gpu_ids="${9}"     # ID numbers of the GPUs that are available to be used by ranks on each node, empty string uses no GPU
+
+# parse input flags
+shift 9
+plumed_std_in=''
+while test $# -gt 0; do
+    case "$1" in
+    -p | --plumed)
+        plumed_std_in="${1} ${2}"
+        shift 2
+        ;;
+    *)
+        echo "ERROR: Unexpected option: $1"
+        exit 1
+        ;;
+    esac
+done
+
+# change to correct directory
+cd "${simulation_dir}" || exit
+
+# find index file
+if [[ -f "index.ndx" ]]; then
+    ndx_name="index"
+elif [[ -f "./conf_solv_ions.ndx" ]]; then
+    ndx_name="conf_solv_ions"
+elif [[ -f "./conf_box.ndx" ]]; then
+    ndx_name="conf_box"
+else
+    echo "ERROR: Expected index file not found"
+    exit 1
+fi
+
+# create tpr file
+"${gmx_exe}" -quiet -nocopyright grompp \
+    -f "${parameter_file}" \
+    -c "${input_simulation_name}.gro" \
+    -r "${input_simulation_name}.gro" \
+    -p "topol.top" \
+    -n "${ndx_name}.ndx" \
+    -o "${output_simulation_name}.tpr" \
+    -maxwarn "${num_warnings}"
+
+# add continuation flag if .xtc file exists
+if [[ -f "./${output_simulation_name}.xtc" ]]; then
+    cont_flag="-cpi ${output_simulation_name}.cpt -px ${output_simulation_name}_pullx -pf ${output_simulation_name}_pullf"
+
+else
+    cont_flag=""
+fi
+
+# choose cpu thread options
+if [[ "${cpu_threads}" == '-1' ]]; then
+    cpu_thread_options='-pin on -pinstride 1'
+elif [[ "${pin_offset}" == '-1' ]]; then
+    cpu_thread_options="-nt ${cpu_threads} -pin on -pinstride 1"
+else
+    cpu_thread_options="-nt ${cpu_threads} -pin on -pinoffset ${pin_offset} -pinstride 1"
+fi
+
+# choose GPU options
+if [[ "${gpu_ids}" = "-1" ]]; then
+    gpu_options=''
+else
+    gpu_options="-gpu_id ${gpu_ids}"
+fi
+
+# Find walltime remaining
+if [[ -n "${SLURM_JOB_ID+x}" ]]; then
+    echo "SLURM_JOB_ID is set to '${SLURM_JOB_ID}'"
+    # Slurm find walltime remaining, return in format DD-HH:MM:SS
+    walltime_remaining="$(squeue -j "${SLURM_JOB_ID}" -h -o '%L')"
+
+    # > 1 day walltime remaining
+    if [[ "${walltime_remaining}" == *-* ]]; then
+        walltime_remaining_days="$(echo "${walltime_remaining}" | awk -F- '{print $1}')"
+        walltime_remaining_hours="$(echo "${walltime_remaining}" | awk -F- '{print $2}' | awk -F: '{print $1}')"
+        walltime_remaining_minutes="$(echo "${walltime_remaining}" | awk -F- '{print $2}' | awk -F: '{print $2}')"
+        total_walltime_remaining_hours="$(bc -l <<<"scale=2; (${walltime_remaining_days}*24)+${walltime_remaining_hours}+(${walltime_remaining_minutes}/60)")"
+
+    # < 1 day walltime remaining
+    elif [[ "${walltime_remaining}" == *:*:* ]]; then
+        walltime_remaining_hours="$(echo "${walltime_remaining}" | awk -F: '{print $1}')"
+        walltime_remaining_minutes="$(echo "${walltime_remaining}" | awk -F: '{print $2}')"
+        total_walltime_remaining_hours="$(bc -l <<<"scale=2; ${walltime_remaining_hours}+(${walltime_remaining_minutes}/60)")"
+
+    # < 1 hour walltime remaining
+    elif [[ "${walltime_remaining}" == *:* ]]; then
+        echo "WARNING: Less than 1 hour walltime remaining"
+        exit
+
+    else
+        total_walltime_remaining_hours="$(echo "${walltime_remaining}" | awk -F: '{print $1}')"
+    fi
+
+    # subtract 1 hour for safety
+    mdrun_runtime_hours="$(bc -l <<<"scale=2; ${total_walltime_remaining_hours}-1.5")"
+else
+    # No walltime limit
+    echo "SLURM_JOB_ID is not set"
+    mdrun_runtime_hours='10000'
+fi
+
+# run
+# shellcheck disable=SC2086
+"${gmx_exe}" -quiet -nocopyright mdrun \
+    -maxh "${mdrun_runtime_hours}" \
+    -deffnm "${output_simulation_name}" \
+    ${cpu_thread_options} \
+    ${gpu_options} \
+    $cont_flag \
+    $plumed_std_in

@@ -1,0 +1,230 @@
+#!/usr/bin/env bash
+# Created by Alec Glisman (GitHub: @alec-glisman) on April 6th, 2022
+
+# built-in shell options
+set -o errexit # exit when a command fails. Add || true to commands allowed to fail
+set -o nounset # exit when script tries to use undeclared variables
+# bash extended options
+shopt -s extglob
+
+# input checking
+if [[ "$#" -ne 9 ]]; then
+    echo "Error: gmx_sol_ion correct arguments not supplied"
+    echo "gmx_sol_ion [gmx_executable] \ "
+    echo "    [n_na_ion] [n_ca_ion] [n_cl_ion] \ "
+    echo "    [ndx_filename] [top_filename] [md_filename] [gro_sol_filename] \ "
+    echo "    [output_simulation_name]"
+    exit 1
+fi
+
+# variables
+gmx_exe="${1}"
+
+n_na_ion="${2}"
+n_ca_ion="${3}"
+n_cl_ion="${4}"
+
+ndx_filename="${5}"
+top_filename="${6}"
+mdp_filename="${7}"
+gro_sol_filename="${8}"
+
+output_simulation_name="${9}"
+
+# data output
+output_solvate_dir="2-solvate"
+output_ion_dir="3-ions"
+mkdir -p "${output_solvate_dir}" "${output_ion_dir}"
+
+# ANCHOR: Make ndx file with chain groups
+idx_group='1'
+
+# make index file
+"${gmx_exe}" --nocopyright make_ndx \
+    -f "1-structure-em/polyelectrolyte_em.gro" \
+    -o "${ndx_filename}" \
+    <<EOF
+q
+EOF
+idx_group=$((idx_group + 9))
+
+# add groups for chain oxygen atoms
+"${gmx_exe}" --nocopyright make_ndx \
+    -f "1-structure/packmol-two-chain.pdb" \
+    -n "${ndx_filename}" \
+    -o "${ndx_filename}" \
+    <<EOF
+a O*
+name ${idx_group} Chain_Oxygen
+q
+EOF
+idx_group=$((idx_group + 1))
+
+# add groups for each chain
+if [[ "${N_CHAINS}" == 1 ]]; then
+    "${gmx_exe}" --nocopyright make_ndx \
+        -f "1-structure/packmol-two-chain.pdb" \
+        -n "${ndx_filename}" \
+        -o "${ndx_filename}" \
+        <<EOF
+chain A
+name ${idx_group} Chain_A
+q
+EOF
+    idx_group=$((idx_group + 1))
+
+elif [[ "${N_CHAINS}" == 2 ]]; then
+
+    "${gmx_exe}" --nocopyright make_ndx \
+        -f "1-structure/packmol-two-chain.pdb" \
+        -n "${ndx_filename}" \
+        -o "${ndx_filename}" \
+        <<EOF
+chain A
+name ${idx_group} Chain_A
+chain B
+name $((idx_group + 1)) Chain_B
+q
+EOF
+    idx_group=$((idx_group + 2))
+
+else
+    echo "Error: gmx_sol_ion only supports 1 or 2 chains"
+    exit 1
+fi
+
+# ANCHOR: Solvate
+# choose input file
+"${gmx_exe}" --nocopyright solvate \
+    -cp "${output_simulation_name}.gro" \
+    -cs "${gro_sol_filename}" \
+    -o "${output_simulation_name}.gro" \
+    -p "${top_filename}" # WARNING: masses and atomic radii guessed and pulled from (A. Bondi "van der Waals Volumes and Radii" J. Phys. Chem. 68 (1964) pp. 441-451))
+
+# remake index file with solvent molecules
+"${gmx_exe}" --nocopyright make_ndx \
+    -f "${output_simulation_name}.gro" \
+    -n "${ndx_filename}" \
+    -o "${ndx_filename}" \
+    <<EOF
+r SOL
+name ${idx_group} SOL
+q
+EOF
+idx_group=$((idx_group + 1))
+
+# copy created files
+cp {*.gro,*.top,*.itp,*.ndx} "${output_solvate_dir}"
+# remove back-up files
+find . -name '#*#' -exec rm {} \;
+
+# ANCHOR: Add ions to bulk solvent group
+# Sodium ions
+"${gmx_exe}" --nocopyright grompp \
+    -f "${mdp_filename}" \
+    -c "${output_simulation_name}.gro" \
+    -p "${top_filename}" \
+    -o "${output_simulation_name}.tpr" \
+    -maxwarn "1" # WARNING:  You are using Ewald electrostatics in a system with net charge (expected)
+"${gmx_exe}" --nocopyright genion \
+    -s "${output_simulation_name}.tpr" \
+    -p "${top_filename}" \
+    -o "${output_simulation_name}.gro" \
+    -pname "NA" \
+    -np "${n_na_ion}" \
+    -rmin "0.6" \
+    <<EOF
+SOL
+EOF
+
+# Chloride ions
+"${gmx_exe}" --nocopyright grompp \
+    -f "${mdp_filename}" \
+    -c "${output_simulation_name}.gro" \
+    -p "${top_filename}" \
+    -o "${output_simulation_name}.tpr" \
+    -maxwarn "1" # WARNING:  You are using Ewald electrostatics in a system with net charge (expected)
+"${gmx_exe}" --nocopyright genion \
+    -s "${output_simulation_name}.tpr" \
+    -p "${top_filename}" \
+    -o "${output_simulation_name}.gro" \
+    -nname "CL" \
+    -nn "${n_cl_ion}" \
+    -rmin "0.6" \
+    <<EOF
+SOL
+EOF
+
+# Calcium ions
+"${gmx_exe}" --nocopyright grompp \
+    -f "${mdp_filename}" \
+    -c "${output_simulation_name}.gro" \
+    -p "${top_filename}" \
+    -o "${output_simulation_name}.tpr" \
+    -maxwarn "1" # WARNING:  You are using Ewald electrostatics in a system with net charge (expected)
+"${gmx_exe}" --nocopyright genion \
+    -s "${output_simulation_name}.tpr" \
+    -p "${top_filename}" \
+    -o "${output_simulation_name}.gro" \
+    -pname "CA" \
+    -np "${n_ca_ion}" \
+    -rmin "0.6" \
+    <<EOF
+SOL
+EOF
+
+# remake index file with ions
+if [[ "${n_ca_ion}" -gt 0 ]]; then
+    "${gmx_exe}" --nocopyright make_ndx \
+        -f "${output_simulation_name}.gro" \
+        -n "${ndx_filename}" \
+        -o "${ndx_filename}" \
+        <<EOF
+r CA
+name ${idx_group} CA
+q
+EOF
+    idx_group=$((idx_group + 1))
+fi
+
+if [[ "${n_na_ion}" -gt 0 ]]; then
+    "${gmx_exe}" --nocopyright make_ndx \
+        -f "${output_simulation_name}.gro" \
+        -n "${ndx_filename}" \
+        -o "${ndx_filename}" \
+        <<EOF
+r NA
+name ${idx_group} NA
+q
+EOF
+    idx_group=$((idx_group + 1))
+fi
+
+if [[ "${n_cl_ion}" -gt 0 ]]; then
+    "${gmx_exe}" --nocopyright make_ndx \
+        -f "${output_simulation_name}.gro" \
+        -n "${ndx_filename}" \
+        -o "${ndx_filename}" \
+        <<EOF
+r CL
+name ${idx_group} CL
+q
+EOF
+    idx_group=$((idx_group + 1))
+fi
+
+"${gmx_exe}" --nocopyright make_ndx \
+    -f "${output_simulation_name}.gro" \
+    -n "${ndx_filename}" \
+    -o "${ndx_filename}" \
+    <<EOF
+r SOL NA CA CL
+name ${idx_group} Water_and_ions
+q
+EOF
+idx_group=$((idx_group + 1))
+
+# copy created files
+cp {*.ndx,*.tpr,*.gro,*.top,*.mdp} "${output_ion_dir}"
+# remove back-up files
+find . -name '#*#' -exec rm {} \;

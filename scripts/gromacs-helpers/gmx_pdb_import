@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# Created by Alec Glisman (GitHub: @alec-glisman) on April 6th, 2022
+
+# built-in shell options
+set -o errexit # exit when a command fails. Add || true to commands allowed to fail
+set -o nounset # exit when script tries to use undeclared variables
+# bash extended options
+shopt -s extglob
+
+# input checking
+if [ "$#" -ne 16 ]; then
+    echo "Error: gmx_pdb_import correct arguments not supplied"
+    echo "gmx_pdb_import [gmx_exe] \ "
+    echo "    [n_chains] [pdb_file] \ "
+    echo "    [temperature_K] [force_field_name] [water_model] \ "
+    echo "    [box_geometry] [initial_z_spacing_ang] [pbc_atom_chain_a] [pbc_atom_chain_b] \ "
+    echo "    [top_filename] [mdp_em_isolated_filename] [ndx_chain_filename] \ "
+    echo "    [cpu_threads] [pin_offset] [gpu_ids]"
+    exit 1
+fi
+
+# MacOSX sed is different from Linux sed
+if [[ $OSTYPE == 'darwin'* ]]; then
+    sed_exe='gsed'
+else
+    sed_exe='sed'
+fi
+
+gmx_exe="${1}"
+
+# polyelectrolyte
+n_chains="${2}"
+pdb_file="${3}"
+initial_z_spacing_ang="${8}"
+
+# statistical mechanics
+temperature_K="${4}"
+
+# force field
+force_field_name="${5}"
+
+# solvent
+water_model="${6}"
+
+# simulation box
+box_geometry="${7}"
+
+# periodic boundary conditions
+pbc_atom_chain_A="${9}"
+pbc_atom_chain_B="${10}"
+
+# Gromacs files
+top_filename="${11}"
+mdp_em_isolated_filename="${12}"
+ndx_chain_filename="${13}"
+
+# hardware
+cpu_threads="${14}"
+pin_offset="${15}"
+gpu_ids="${16}"
+
+# output directories
+structure_dir="1-structure"
+em_dir="1-structure-em"
+mkdir -p "${structure_dir}" "${em_dir}"
+
+# get input pdb
+cp "${pdb_file}" .
+input_pdb_filename=$(basename "${pdb_file}")
+
+# ANCHOR: convert single-chain to double-chain using packmol
+if [[ "${n_chains}" == "1" ]]; then
+    # copy packmol template file
+    packmol_file="packmol-one-chain.inp"
+    packmol_output_pdb="packmol-one-chain.pdb"
+    cp "${REPO_BASE_DIR}/parameters/packmol/one_chain.inp" "${packmol_file}"
+
+    # replace template variables
+    "${sed_exe}" -i "s/INPUT_PDB_FILENAME/${input_pdb_filename}/g" "${packmol_file}"
+    "${sed_exe}" -i "s/PACKMOL_OUTPUT_PDB/${packmol_output_pdb}/g" "${packmol_file}"
+
+elif [[ "${n_chains}" == "2" ]]; then
+    # copy packmol template file
+    packmol_file="packmol-two-chain.inp"
+    packmol_output_pdb="packmol-two-chain.pdb"
+    cp "${REPO_BASE_DIR}/parameters/packmol/two_chain.inp" "${packmol_file}"
+
+    # replace template variables
+    "${sed_exe}" -i "s/INPUT_PDB_FILENAME/${input_pdb_filename}/g" "${packmol_file}"
+    "${sed_exe}" -i "s/PACKMOL_OUTPUT_PDB/${packmol_output_pdb}/g" "${packmol_file}"
+    "${sed_exe}" -i "s/INITIAL_Z_SPACING_ANG/${initial_z_spacing_ang}/g" "${packmol_file}"
+
+else
+    echo "ERROR: n_chains must be 1 or 2"
+    exit 1
+fi
+
+# run packmol
+packmol <"${packmol_file}"
+
+# convert pdb title
+original_title="TITLE     Built with Packmol"
+new_title="TITLE     ${TAG} (built with Packmol)"
+"${sed_exe}" -i "s/${original_title}/${new_title}/g" "${packmol_output_pdb}"
+
+# ANCHOR: generate GROMACS files from input .pdb file
+# Create gmx files from input pdb, force field, and water model
+output_simulation_name="polyelectrolyte"
+"${gmx_exe}" --nocopyright pdb2gmx -v \
+    -f "${packmol_output_pdb}" \
+    -o "${output_simulation_name}.gro" \
+    -p "${top_filename}" \
+    -n "index.ndx" \
+    -q "pdb2gmx_clean.pdb" \
+    -ff "${force_field_name}" \
+    -water "${water_model}" \
+    -chainsep "id" \
+    -noignh \
+    -renum \
+    -rtpres
+
+# Create box
+box_size_spaces="${BOX_SIZE//_/ }"
+# shellcheck disable=SC2086
+"${gmx_exe}" --nocopyright editconf \
+    -f "${output_simulation_name}.gro" \
+    -o "${output_simulation_name}.gro" \
+    -bt "${box_geometry}" \
+    -box ${box_size_spaces} \
+    -c
+
+# copy created files
+cp {*.pdb,*.inp} "${structure_dir}"
+rm {*.pdb,*.inp}
+cp {*.gro,*.top,*.itp,*.ndx} "${structure_dir}"
+# remove back-up files
+find . -name '#*#' -exec rm {} \;
+
+# NOTE: Energy minimization
+# GROMACS simulation names
+input_simulation_name="${output_simulation_name}"
+input_dir="."
+output_simulation_name="${input_simulation_name}_em"
+output_dir="${input_dir}"
+output_simulation_dir="${em_dir}"
+num_warnings='1'
+
+# timeout energy minimization if it takes too long (often stuck at step 0)
+timeout --signal=9 '120m' \
+    gmx_mdrun_pipeline "${gmx_exe}" \
+    "${input_simulation_name}" "${mdp_em_isolated_filename}" "${input_dir}" \
+    "${output_simulation_name}" "${output_dir}" "${output_simulation_dir}" \
+    "${temperature_K}" "${pbc_atom_chain_A}" "${pbc_atom_chain_B}" \
+    "${num_warnings}" "${cpu_threads}" "${pin_offset}" "${gpu_ids}"
+
+# change "index.ndx" to "${ndx_chain_filename}"
+mv "${em_dir}/index.ndx" "${em_dir}/${ndx_chain_filename}"
+mv "index.ndx" "${ndx_chain_filename}"

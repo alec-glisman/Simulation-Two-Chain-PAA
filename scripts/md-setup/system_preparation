@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Created by Alec Glisman (GitHub: @alec-glisman) on March 7th, 2022
+#
+
+# ANCHOR: Bash options
+# built-in shell options
+set -o errexit # exit when a command fails. Add || true to commands allowed to fail
+set -o nounset # exit when script tries to use undeclared variables
+# bash extended options
+shopt -s extglob
+
+# ANCHOR: Script variables
+# path variables
+if [[ "${INPUT_DATA_DIR}" == '-1' ]]; then
+    base_dir="${REPO_BASE_DIR}/data/${TAG}"
+else
+    base_dir="${INPUT_DATA_DIR}"
+fi
+output_dir="${base_dir}/1-system-preparation"
+
+# gromacs files
+top_filename="topol.top"
+ndx_filename="index.ndx"
+ndx_chain_filename="index_chain.ndx"
+
+if [[ "${WATER_MODEL}" == "spce" ]]; then
+    gro_water_filename="spc216.gro"
+else
+    echo "Error: ${WATER_MODEL} not supported"
+    exit 1
+fi
+
+# mdp file paths
+mdp_base_path="${PARAMETERS_DIR}/energy-minimization"
+if [[ "${N_CHAINS}" == "2" ]]; then
+    mdp_ion_file="${mdp_base_path}/ions.mdp"
+    mdp_em_isolated_file="${mdp_base_path}/em_posres.mdp"
+    mdp_em_system_file="${mdp_base_path}/em_posres.mdp"
+elif [[ "${N_CHAINS}" == "1" ]]; then
+    mdp_ion_file="${mdp_base_path}/ions.mdp"
+    mdp_em_isolated_file="${mdp_base_path}/em.mdp"
+    mdp_em_system_file="${mdp_base_path}/em.mdp"
+fi
+
+# make parent directory
+mkdir -p "${output_dir}"
+cd "${output_dir}" || exit
+
+# log paths
+log_filename="standard_out_and_error.log"
+touch "${log_filename}"
+
+# copy force field
+cp -rpn "${FORCE_FIELD_DIR}" .
+
+echo ""
+echo "Starting system preparation..."
+
+# ANCHOR: Convert pdb file to gromacs input system
+echo "  - Converting input pdb file to gromacs input system"
+echo "    and energy minimizing structure in vacuo."
+{
+    if [[ ! -f "${output_dir}/1-structure-em/polyelectrolyte_em.gro" ]]; then
+        gmx_pdb_import "${GMX_EXE}" \
+            "${N_CHAINS}" "${PDB_FILE}" \
+            "${TEMPERATURE_K}" "${FORCE_FIELD_NAME}" "${WATER_MODEL}" \
+            "${BOX_GEOMETRY}" "${INITIAL_Z_SPACING_ANG}" "${PBC_ATOM_CHAIN_A}" "${PBC_ATOM_CHAIN_B}" \
+            "${top_filename}" "${mdp_em_isolated_file}" "${ndx_chain_filename}" \
+            "${CPU_THREADS}" "${PIN_OFFSET}" "${GPU_IDS}"
+    else
+        echo "!!!! Skipping conversion of pdb file and isolated energy minimization because ${output_dir}/1-structure-em/polyelectrolyte_em.gro already exists"
+    fi
+} >>"${log_filename}" 2>&1
+
+# ANCHOR: Add solvent and ions to gromacs system
+echo "  - Adding solvent and small ions to system."
+{
+    if [[ ! -f "${output_dir}/3-ions/polyelectrolyte_em.gro" ]]; then
+        gmx_sol_ion "${GMX_EXE}" \
+            "${N_NA_ION}" "${N_CA_ION}" "${N_CL_ION}" \
+            "${ndx_filename}" "${top_filename}" "${mdp_ion_file}" "${gro_water_filename}" \
+            "polyelectrolyte_em"
+    else
+        echo "!!!! Skipping adding solvent and ions to system because ${output_dir}/3-ions/polyelectrolyte_em.gro already exists"
+    fi
+} >>"${log_filename}" 2>&1
+
+# ANCHOR: Energy minimize gromacs system
+echo "  - Energy minimizing input structure."
+{
+    if [[ ! -f "${output_dir}/4-em/system_em.gro" ]]; then
+        timeout --signal=9 '120m' \
+            gmx_mdrun_pipeline "${GMX_EXE}" \
+            "polyelectrolyte_em" "${mdp_em_system_file}" "${output_dir}" \
+            "system_em" "${output_dir}" "4-em" \
+            "${TEMPERATURE_K}" "${PBC_ATOM_CHAIN_A}" "${PBC_ATOM_CHAIN_B}" \
+            "0" "${CPU_THREADS}" "${PIN_OFFSET}" "${GPU_IDS}"
+    else
+        echo "!!!! Skipping energy minimization step because ${output_dir}/4-em/system_em.gro already exists"
+    fi
+} >>"${log_filename}" 2>&1

@@ -1,0 +1,267 @@
+#!/usr/bin/env bash
+# Created by Alec Glisman (GitHub: @alec-glisman) on January 19th, 2022
+
+# built-in shell options
+set -o errexit # exit when a command fails. Add || true to commands allowed to fail
+set -o nounset # exit when script tries to use undeclared variables
+# bash extended options
+shopt -s extglob
+
+# input checking
+if [[ "$#" -ne 4 ]]; then
+    echo "Error: gmx_analysis correct arguments not supplied"
+    echo "gmx_analysis [gmx_executable] [input_path] [relative_output_path] [md_name]"
+    exit 1
+fi
+
+# find index file
+if [[ -f "index.ndx" ]]; then
+    ndx_name="index"
+elif [[ -f "./conf_solv_ions.ndx" ]]; then
+    ndx_name="conf_solv_ions"
+elif [[ -f "./conf_box.ndx" ]]; then
+    ndx_name="conf_box"
+else
+    echo "ERROR: Expected index file not found"
+    exit 1
+fi
+
+# Gromacs analysis parameters
+gmx_exe="${1}"
+input_path="${2}"
+md_name="${4}"
+output_dir="${3}/analysis-${md_name}"
+
+# log messages
+log_file="analysis-${md_name}.log"
+echo "Starting gmx_analysis in ${input_path}"
+echo "  with output dir: ${output_dir}"
+echo "  and with md_name: ${md_name}"
+
+# change to correct directory for analysis
+cd "${input_path}" || exit
+
+# make parent directory
+mkdir -p "${output_dir}"
+
+# ANCHOR: EDR data plots
+# potential energy
+"${gmx_exe}" -nocopyright -quiet energy \
+    -f "${md_name}.edr" \
+    -o "potential_energy.xvg" \
+    >>"${log_file}" 2>&1 \
+    <<EOF
+Potential
+0
+EOF
+
+# total energy (variable may not always exist)
+{
+    "${gmx_exe}" -nocopyright -quiet energy \
+        -f "${md_name}.edr" \
+        -o "total_energy.xvg" \
+        >>"${log_file}" 2>&1 \
+        <<EOF
+Total-Energy
+0
+EOF
+} || true
+
+# temperature (variable may not always exist)
+{
+    "${gmx_exe}" -nocopyright -quiet energy \
+        -f "${md_name}.edr" \
+        -o "temperature.xvg" \
+        >>"${log_file}" 2>&1 \
+        <<EOF
+Temperature
+0
+EOF
+} || true
+
+# pressure (multiple redirects are not used)
+# shellcheck disable=SC2129
+"${gmx_exe}" -nocopyright -quiet energy \
+    -f "${md_name}.edr" \
+    -o "pressure.xvg" \
+    >>"${log_file}" 2>&1 \
+    <<EOF
+Pressure
+0
+EOF
+
+# density (variable may not always exist)
+{
+    "${gmx_exe}" -nocopyright -quiet energy \
+        -f "${md_name}.edr" \
+        -o density.xvg \
+        >>"${log_file}" 2>&1 \
+        <<EOF
+Density
+0
+EOF
+} || true
+
+# ANCHOR: Trajectory modifications (multiple redirects are not used)
+# unwrap trajectories of system with no water
+# shellcheck disable=SC2129
+"${gmx_exe}" -nocopyright -quiet trjconv \
+    -s "${md_name}.tpr" \
+    -f "${md_name}.xtc" \
+    -n "${ndx_name}.ndx" \
+    -o "${md_name}_no_water_no_pbc.xtc" \
+    -pbc 'mol' -center \
+    >>"${log_file}" 2>&1 \
+    <<EOF
+Protein
+non-Water
+EOF
+
+# make pdb file
+"${gmx_exe}" -nocopyright -quiet trjconv \
+    -s "${md_name}.tpr" \
+    -f "${md_name}.xtc" \
+    -n "${ndx_name}.ndx" \
+    -o "${md_name}.pdb" \
+    -dump '0' \
+    -conect \
+    >>"${log_file}" 2>&1 \
+    <<EOF
+System
+EOF
+
+# make unwrapped pdb file with no water
+"${gmx_exe}" -nocopyright -quiet trjconv \
+    -s "${md_name}.tpr" \
+    -f "${md_name}.xtc" \
+    -n "${ndx_name}.ndx" \
+    -o "${md_name}_no_water_no_pbc.pdb" \
+    -dump '0' \
+    -conect \
+    -pbc 'mol' -center \
+    >>"${log_file}" 2>&1 \
+    <<EOF
+Protein
+non-Water
+EOF
+
+# ANCHOR: GROMACS built-in analysis tools
+# RMSD trajectories
+if [[ ! -f "${output_dir}/rmsd.xvg" ]]; then
+    # shellcheck disable=SC2129
+    "${gmx_exe}" -nocopyright -quiet rms \
+        -s "${md_name}.tpr" \
+        -f "${md_name}.xtc" \
+        -n "${ndx_name}.ndx" \
+        -o "rmsd.xvg" \
+        >>"${log_file}" 2>&1 \
+        <<EOF
+Protein
+Protein
+EOF
+fi
+
+# Radius of gyration (R_g)
+if [[ ! -f "${output_dir}/gyrate.xvg" ]]; then
+    "${gmx_exe}" -nocopyright -quiet gyrate \
+        -s "${md_name}.tpr" \
+        -f "${md_name}.xtc" \
+        -n "${ndx_name}.ndx" \
+        -o "gyrate.xvg" \
+        >>"${log_file}" 2>&1 \
+        <<EOF
+Protein
+EOF
+fi
+
+# Polystat: end-to-end vector (R_{ee}), radius of gyration (R_g), and internal squared distances
+if [[ ! -f "${output_dir}/polystat.xvg" ]]; then
+    "${gmx_exe}" -nocopyright -quiet polystat \
+        -s "${md_name}.tpr" \
+        -f "${md_name}.xtc" \
+        -n "${ndx_name}.ndx" \
+        -o "polystat.xvg" \
+        -i "intdist.xvg" \
+        >>"${log_file}" 2>&1 \
+        <<EOF
+Protein
+EOF
+fi
+
+# Polystat: persistence length (L_p) of the backbone
+if [[ ! -f "${output_dir}/persist_backbone.xvg" ]]; then
+    {
+        "${gmx_exe}" -nocopyright -quiet polystat \
+            -s "${md_name}.tpr" \
+            -f "${md_name}.xtc" \
+            -n "${ndx_name}.ndx" \
+            -p "persist_backbone.xvg" \
+            >>"${log_file}" 2>&1 \
+            <<EOF
+Backbone
+EOF
+    } || true
+fi
+
+# Radial distribution functions (and cumulative distribution functions)
+given_groups=("NA" "CL" "CA")
+reference_groups=("Protein")
+{
+    for g in "${given_groups[@]}"; do
+        for r in "${reference_groups[@]}"; do
+            output_filename="rdf_${g}_${r}.xvg"
+
+            if [[ ! -f "${output_dir}/${output_filename}" ]]; then
+                {
+                    "${gmx_exe}" -nocopyright -quiet rdf \
+                        -s "${md_name}.tpr" \
+                        -f "${md_name}.xtc" \
+                        -n "${ndx_name}.ndx" \
+                        -o "${output_filename}" \
+                        -cn "cn_${output_filename}" \
+                        >>"${log_file}" 2>&1 \
+                        <<EOF
+"${r}"
+"${g}"
+EOF
+                }
+            fi || true
+        done
+    done
+
+} || true
+
+# ANCHOR: Cleanup and copy remaining files
+# copy more output files
+cp {mdout.mdp,"${md_name}.tpr"} -t "${output_dir}"
+
+# convert all xvg files to png files
+for file in *.xvg; do
+    [ -f "$file" ] || continue
+    filename="${file%.*}"
+
+    # may fail due to device dimensions
+    {
+        if [[ ! -f "${output_dir}/png/${filename}.png" ]]; then
+            gracebat -nxy "${filename}.xvg" \
+                -hdevice "PNG" \
+                -autoscale "xy" \
+                -printfile "${filename}.png" \
+                -fixed "3840" "2160" \
+                >>"${log_file}" 2>&1
+        fi
+    } || true
+done
+
+# move all files to output dir
+{
+    mkdir -p "${output_dir}/png"
+    mv -vn ./*.png "${output_dir}/png"
+} || true
+
+{
+    find ./ \
+        -maxdepth 1 \
+        -type f \( -name "*.xvg" -a ! -name "*_pull*" \) \
+        -exec mv -t "${output_dir}/" {} +
+} || true

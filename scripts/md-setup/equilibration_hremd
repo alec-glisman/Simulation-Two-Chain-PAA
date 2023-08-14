@@ -1,0 +1,604 @@
+#!/usr/bin/env bash
+# Created by Alec Glisman (GitHub: @alec-glisman) on March 22nd, 2022
+#
+
+# built-in shell options
+set -o errexit # exit when a command fails. Add || true to commands allowed to fail
+set -o nounset # exit when script tries to use undeclared variables
+
+# bash extended options
+shopt -s extglob
+
+# signal handling
+
+requeue_handler() {
+    echo "Caught SIGCONT SIGTERM, requeueing job"
+
+    # files to check
+    arr_files=("COLVAR.dat" "HILLS.dat")
+    arr_nline_header=('1' '5')
+
+    # iterate over indexes of arr_files
+    for f in "${!arr_files[@]}"; do
+
+        # loop over replicas
+        for d in './replica_'*; do
+
+            # check if file exists
+            if [ -f "${d}/${arr_files[$f]}" ]; then
+
+                # check if file has enough lines
+                n_lines=$(wc -l <"${arr_files[$f]}")
+                if [[ "${n_lines}" -gt "${arr_nline_header[$f]}" ]]; then
+                    n_char=$(tail -2 "${arr_files[$f]}" | head -1 | wc -c)
+                    n_char_last=$(tail -1 "${arr_files[$f]}" | wc -c)
+
+                    # delete last line if corrupted
+                    if [[ "${n_char}" -ne "${n_char_last}" ]]; then
+                        echo "Last line of ${arr_files[$f]} is corrupted. Deleting last line."
+                        sed -i '$d' "${arr_files[$f]}"
+                    fi
+                fi
+            fi
+        done
+    done
+
+    # closing
+    echo "Job was requeued by signal $1"
+}
+trap 'requeue_handler' SIGCONT SIGTERM
+
+exit_handler() {
+    echo "Caught SIGINT SIGTERM, exiting job"
+
+    # call requeue_handler
+    requeue_handler "$@"
+
+    # closing
+    echo "Job was exited by signal $1"
+}
+trap 'exit_handler' SIGINT SIGTERM
+
+# MacOSX sed is different from Linux sed
+if [[ $OSTYPE == 'darwin'* ]]; then
+    sed_exe='gsed'
+else
+    sed_exe='sed'
+fi
+
+# allow plumed to make 10,000 backups
+export PLUMED_MAXBACKUP='10000'
+
+# ANCHOR: Script variables
+# path variables
+if [[ "${INPUT_DATA_DIR}" == '-1' ]]; then
+    base_dir="${REPO_BASE_DIR}/data/${TAG}"
+else
+    base_dir="${INPUT_DATA_DIR}"
+fi
+
+output_dir="${base_dir}/3-hremd-eqbm-${HREMD_N_REPLICA}_replicas-${HREMD_N_STEPS_EXCH}_steps-${HREMD_T_MIN}_Kmin-${HREMD_T_MAX}_Kmax"
+
+if [[ "${PRODUCTION_ENSEMBLE}" == "nvt" ]]; then
+    input_simulation_name="nvt_eqbm_final"
+    input_dir="${base_dir}/2-md-equilibration/3-nvt"
+
+elif [[ "${PRODUCTION_ENSEMBLE}" == "npt" ]]; then
+    input_simulation_name="npt_eqbm"
+    input_dir="${base_dir}/2-md-equilibration/2-npt"
+
+else
+    echo "ERROR: Unknown production ensemble: ${PRODUCTION_ENSEMBLE}"
+    exit 1
+fi
+
+# make simulation directory and move to it
+mkdir -p "${output_dir}"
+cd "${output_dir}" || exit
+
+# file paths
+output_simulation_name="${PRODUCTION_ENSEMBLE}_hremd_eqbm"
+mdp_filename="${PARAMETERS_DIR}/hremd/${output_simulation_name}_25ns.mdp"
+
+# logs
+log_dir="${output_dir}/logs"
+mkdir -p "${log_dir}"
+log_parameters="${log_dir}/0_constants.log"
+log_setup="${log_dir}/1_preparation.log"
+log_prod="${log_dir}/2_production.log"
+log_tpr="${log_dir}/3_convert-tpr.log"
+log_mdrun="${log_dir}/4_mdrun.log"
+log_post="${log_dir}/5_post_processing.log"
+log_prog="${log_dir}/progress.log"
+
+touch "${log_parameters}"
+touch "${log_setup}"
+touch "${log_prod}"
+touch "${log_tpr}"
+touch "${log_mdrun}"
+touch "${log_post}"
+touch "${log_prog}"
+
+date_time=$(date +"%Y-%m-%d %T")
+
+echo "================================================================================" >>"${log_parameters}"
+echo "START: ${date_time}" >>"${log_parameters}"
+echo "================================================================================" >>"${log_setup}"
+echo "START: ${date_time}" >>"${log_setup}"
+echo "================================================================================" >>"${log_prod}"
+echo "START: ${date_time}" >>"${log_prod}"
+echo "================================================================================" >>"${log_tpr}"
+echo "START: ${date_time}" >>"${log_tpr}"
+echo "================================================================================" >>"${log_mdrun}"
+echo "START: ${date_time}" >>"${log_mdrun}"
+echo "================================================================================" >>"${log_post}"
+echo "START: ${date_time}" >>"${log_post}"
+echo "================================================================================" >>"${log_prog}"
+echo "START: ${date_time}" >>"${log_prog}"
+
+echo ""
+echo "Starting HREMD equilibration..."
+
+{
+    # check if simulation completed successfully, if yes, end script
+    if [[ -f "replica_00/2-mdrun-output/${output_simulation_name}_scaled.gro" ]]; then
+        echo ""
+        echo "GMD mdrun completed successfully on previous run, exiting script..."
+        exit 0
+    fi
+} >>"${log_prog}" 2>&1
+
+{
+    echo "Starting HREMD equilibration..."
+} >>"${log_prog}" 2>&1
+
+# ANCHOR: Create Plumed input file
+{
+    # pdb input structure file
+    pdb_file="packmol_chain.pdb"
+    # pdb file for molinfo
+    if [[ "${N_CHAINS}" == 1 ]]; then
+        pdb_input_file="${base_dir}/1-system-preparation/1-structure/packmol-one-chain.pdb"
+    elif [[ "${N_CHAINS}" == 2 ]]; then
+        pdb_input_file="${base_dir}/1-system-preparation/1-structure/packmol-two-chain.pdb"
+    else
+        echo "ERROR: N_CHAINS must be 1 or 2"
+        exit 1
+    fi
+
+    # polymer atoms to bias
+    bias_pe_atoms=(
+        # synthetic polymer
+        'C' 'C3' 'H1' 'HC' 'HO' 'O' 'OC' 'OH' 'OS'
+        # biological polymer
+        'H' 'H1' 'HC' 'HO' 'HP' 'C' 'CT' 'O' 'O2' 'OH' 'N' 'N3'
+    )
+
+    # small ion group to bias
+    bias_ion_atoms=(
+        # monatomic ions
+        'C0' 'Cl' 'Na'
+        # polyatomic ions
+        'OX' 'CX'
+    )
+
+    # all atoms to bias
+    bias_atoms=("${bias_pe_atoms[@]}" "${bias_ion_atoms[@]}")
+
+    plumed_filename="plumed.dat"
+    if [[ "${METADYNAMICS_FLAG}" ]] && [[ "${N_CHAINS}" == "2" ]]; then
+        # harmonic restraint for chain CoM distance
+        # echo " - Adding harmonic restraint for chain CoM distance at ${INITIAL_Z_SPACING_NM} nm"
+        plumed_template_dir="${REPO_BASE_DIR}/parameters/plumed-mdrun/metad-2chain-cv-comdist"
+        # plumed_template_file="${plumed_template_dir}/two_chain_harmonic.dat"
+        plumed_template_file="${plumed_template_dir}/two_chain_eqbm.dat"
+
+    else
+        # add blank input file
+        plumed_template_file="empty.dat"
+        touch "${plumed_template_file}"
+
+    fi
+    cp "${plumed_template_file}" "${plumed_filename}"
+
+    # replace template parameters on plumed input file
+    "${sed_exe}" -i "s/{pdb_file}/${pdb_file}/g" "${plumed_filename}"
+    "${sed_exe}" -i "s#{python_exe}#${PYTHON_BIN}#g" "${plumed_filename}"
+    "${sed_exe}" -i "s/{WALL_FORCE_CONST}/${WALL_FORCE_CONST}/g" "${plumed_filename}"
+    "${sed_exe}" -i "s/{INITIAL_Z_SPACING_NM}/${INITIAL_Z_SPACING_NM}/g" "${plumed_filename}"
+
+    # If we are not continuing a previous simulation, remove "RESTART" line from file
+    if [[ "${METADYNAMICS_FLAG}" ]] && [[ ! -f "${output_dir}/replica_00/COLVAR.0.dat" ]]; then
+        echo " - Removing 'RESTART' line from plumed input file"
+        "${sed_exe}" -i '/^RESTART$/d' "${plumed_filename}"
+        "${sed_exe}" -i '/^GRID_RFILE=GRID.dat$/d' "${plumed_filename}"
+        "${sed_exe}" -i "s/RESTART=AUTO//g" "${plumed_filename}"
+    else
+        echo " - Continuing previous simulation"
+    fi
+
+} >>"${log_setup}" 2>&1
+
+# ANCHOR: Create HREMD hardware and bias mapping parameters
+echo "Creating replica index array"
+{
+    mapfile -t arr_replica < <(seq -f "%02g" 0 "$((HREMD_N_REPLICA - 1))")
+    echo "Replica index array: ${arr_replica[*]}"
+} >>"${log_parameters}" 2>&1
+echo "Replica index array: ${arr_replica[*]}"
+
+# replica temperature array
+echo "Creating replica temperature array"
+{
+    mapfile -t arr_t < <(
+        awk -v n="${HREMD_N_REPLICA}" \
+            -v t_min="${HREMD_T_MIN}" \
+            -v t_max="${HREMD_T_MAX}" \
+            -v PREC='100' \
+            'BEGIN{for(i=0; i < n; i++){
+            printf "%.17g\n", t_min*exp(i*log(t_max/t_min)/(n-1));
+        }}'
+    )
+    echo "Replica temperatures [K]: ${arr_t[*]}"
+} >>"${log_parameters}" 2>&1
+echo "Replica temperatures [K]: ${arr_t[*]}"
+
+# replica lambda array
+echo "Creating replica scaling parameter (lambda) array"
+{
+    arr_lambda=()
+    for ((i = 0; i < HREMD_N_REPLICA; i++)); do
+        # shellcheck disable=SC2207
+        arr_lambda+=($(bc -l <<<"scale=16; ${TEMPERATURE_K}/${arr_t[i]}" | awk '{printf "%.17g\n", $0}'))
+    done
+    echo "Replica lambdas: ${arr_lambda[*]}"
+    echo "COMPLETE: ${date_time}"
+} >>"${log_parameters}" 2>&1
+echo "Replica lambdas: ${arr_lambda[*]}"
+
+{
+    echo "- Set HREMD parameters"
+} >>"${log_prog}" 2>&1
+
+# ANCHOR: Copy input files and parameters
+echo "Copying input directories and parameters"
+{
+    for i in "${arr_replica[@]}"; do
+        replica_dir="${output_dir}/replica_${i}"
+
+        if [[ ! -d "${replica_dir}" ]]; then
+            echo "Creating replica_${i} directory"
+
+            # make simulation directory
+            mkdir -p "${replica_dir}"
+
+            # copy gromacs files from previous simulation
+            cp "${input_dir}"/*.itp -t "${replica_dir}"
+            cp "${input_dir}"/*.top -t "${replica_dir}"
+            cp "${input_dir}"/*.ndx -t "${replica_dir}"
+
+            # If we are not continuing a previous simulation, remove "RESTART" line from file
+            if [[ "${METADYNAMICS_FLAG}" ]] && [[ ! -f "COLVAR.dat" ]]; then
+                echo " - Removing 'RESTART' line from plumed output file"
+                "${sed_exe}" -i '/^RESTART$/d' "${plumed_filename}"
+                "${sed_exe}" -i '/^GRID_RFILE=GRID.dat$/d' "${plumed_filename}"
+                "${sed_exe}" -i "s/RESTART=AUTO//g" "${plumed_filename}"
+            else
+                echo " - Continuing previous simulation"
+            fi
+
+            # copy gromacs/plumed parameter files
+            cp "${mdp_filename}" "${replica_dir}/mdin.mdp"
+            cp "${pdb_input_file}" "${replica_dir}/${pdb_file}"
+            cp "${plumed_filename}" "${replica_dir}/plumed.dat"
+
+            # modify parameter file
+            local_mdp_file="${replica_dir}/mdin.mdp"
+            # replace system thermostat temperature
+            "${sed_exe}" -i 's/gen-temp.*/gen-temp'" = ${TEMPERATURE_K}"'/g' "${local_mdp_file}"
+            "${sed_exe}" -i 's/ref-t.*/ref-t'" = ${TEMPERATURE_K} ${TEMPERATURE_K}"'/g' "${local_mdp_file}"
+
+            # replace atom group parameters
+            "${sed_exe}" -i 's/pull-group1-pbcatom.*/pull-group1-pbcatom'" = ${PBC_ATOM_CHAIN_A}"'/g' "${local_mdp_file}"
+            "${sed_exe}" -i 's/pull-group2-pbcatom.*/pull-group2-pbcatom'" = ${PBC_ATOM_CHAIN_B}"'/g' "${local_mdp_file}"
+
+            # replace harmonic parameters
+            "${sed_exe}" -i "s/pull-coord1-init.*=.*/pull-coord1-init = ${INITIAL_Z_SPACING_NM}/g" "${local_mdp_file}"
+
+        else
+            echo "replica_${i} directory already exists"
+            echo "Replacing Plumed input file"
+            cp "${plumed_filename}" "${replica_dir}/plumed.dat"
+
+        fi
+
+    done
+
+} >>"${log_setup}" 2>&1
+
+echo "Creating initial gro file for each simulation"
+{
+    cd "${output_dir}" || exit
+
+    for i in "${arr_replica[@]}"; do
+
+        # move to replica directory
+        cd "${output_dir}/replica_${i}" || exit
+
+        # make gro file if it does not exist
+        if [[ ! -f "0-preparation/${output_simulation_name}.gro" ]]; then
+            cp -rpn "${input_dir}/${input_simulation_name}.gro" "${output_simulation_name}.gro"
+        fi
+
+    done
+} >>"${log_setup}" 2>&1
+
+echo "Preprocessing the topology files"
+{
+    for i in "${arr_replica[@]}"; do
+
+        # move to replica directory
+        cd "${output_dir}/replica_${i}" || exit
+
+        {
+            if [[ ! -f "1-mdrun-input/${output_simulation_name}_scaled.tpr" ]]; then
+                echo "Preprocessing replica file ${i}"
+
+                # copy force field
+                cp -rpn "${base_dir}/1-system-preparation/${FORCE_FIELD_NAME}.ff" .
+
+                # run gmx grompp to output preprocessed topology
+                "${GMX_MPI_EXE}" -quiet -nocopyright grompp -v \
+                    -f "mdin.mdp" \
+                    -c "${output_simulation_name}.gro" \
+                    -p "topol.top" \
+                    -pp "processed.top" \
+                    -o "${output_simulation_name}.tpr"
+
+                # append all "hot" atom names with '_' in [atoms] section only
+                for atom in "${bias_atoms[@]}"; do
+                    perl -pi -e "s/\s+\d+\s+\K${atom} /${atom}_/g" "processed.top"
+                done
+
+                # run plumed processing tool to scale interactions
+                # shellcheck disable=SC2001
+                i=$(echo "${i}" | sed 's/^0*//') # strip leading zeros
+                echo " - Plumed scaling of interactions for lambda: ${arr_lambda[${i}]}"
+                "${PLUMED_MPI_EXE}" partial_tempering "${arr_lambda[${i}]}" \
+                    <"processed.top" \
+                    >"scaled.top"
+
+                # remove copied force field
+                rm -r ./*.ff
+
+                # prepare gromacs tpr file
+                echo " - Preparing gromacs tpr file"
+                "${GMX_MPI_EXE}" -quiet -nocopyright grompp -v \
+                    -maxwarn '1' \
+                    -f "mdin.mdp" \
+                    -c "${output_simulation_name}.gro" \
+                    -p "scaled.top" \
+                    -n "index.ndx" \
+                    -o "${output_simulation_name}_scaled.tpr"
+
+                # move files not needed for mdrun
+                mkdir -p "0-preparation"
+                mv "mdin.mdp" "mdout.mdp" \
+                    "${output_simulation_name}.gro" "${output_simulation_name}.tpr" \
+                    "0-preparation/"
+                mv ./*.itp "0-preparation/"
+                mv ./*.top "0-preparation/"
+                cp ./*.ndx -t "0-preparation/"
+
+                # save initial state of mdrun input files
+                mkdir -p "1-mdrun-input"
+                cp "index.ndx" "${output_simulation_name}_scaled.tpr" \
+                    "packmol_chain.pdb" "plumed.dat" \
+                    -t "1-mdrun-input/"
+
+                # clean up
+                rm -r "./#"* || true
+            fi
+        } >>"${log_setup:0:-4}_replica_${i}.log" 2>&1 &
+
+        # return to base directory
+        cd "${output_dir}" || exit
+    done
+
+    echo "COMPLETE: ${date_time}"
+} >>"${log_setup}" 2>&1
+
+{
+    echo "- Initial structures and topologies prepared for HREMD"
+} >>"${log_prog}" 2>&1
+
+{
+    # Find walltime remaining
+    if [[ -n "${SLURM_JOB_ID+x}" ]]; then
+        echo "SLURM_JOB_ID is set to '${SLURM_JOB_ID}'"
+        # Slurm find walltime remaining, return in format DD-HH:MM:SS
+        walltime_remaining="$(squeue -j "${SLURM_JOB_ID}" -h -o '%L')"
+
+        # > 1 day walltime remaining
+        if [[ "${walltime_remaining}" == *-* ]]; then
+            walltime_remaining_days="$(echo "${walltime_remaining}" | awk -F- '{print $1}')"
+            walltime_remaining_hours="$(echo "${walltime_remaining}" | awk -F- '{print $2}' | awk -F: '{print $1}')"
+            walltime_remaining_minutes="$(echo "${walltime_remaining}" | awk -F- '{print $2}' | awk -F: '{print $2}')"
+            total_walltime_remaining_hours="$(bc -l <<<"scale=2; (${walltime_remaining_days}*24)+${walltime_remaining_hours}+(${walltime_remaining_minutes}/60)")"
+
+        # < 1 day walltime remaining
+        elif [[ "${walltime_remaining}" == *:*:* ]]; then
+            walltime_remaining_hours="$(echo "${walltime_remaining}" | awk -F: '{print $1}')"
+            walltime_remaining_minutes="$(echo "${walltime_remaining}" | awk -F: '{print $2}')"
+            total_walltime_remaining_hours="$(bc -l <<<"scale=2; ${walltime_remaining_hours}+(${walltime_remaining_minutes}/60)")"
+
+        # < 1 hour walltime remaining
+        elif [[ "${walltime_remaining}" == *:* ]]; then
+            echo "WARNING: Less than 1 hour walltime remaining"
+            exit
+
+        else
+            total_walltime_remaining_hours="$(echo "${walltime_remaining}" | awk -F: '{print $1}')"
+        fi
+
+        # subtract 1 hour for safety
+        mdrun_runtime_hours="$(bc -l <<<"scale=2; ${total_walltime_remaining_hours}-1.5")"
+    else
+        # No walltime limit
+        echo "SLURM_JOB_ID is not set"
+        mdrun_runtime_hours='10000'
+    fi
+
+    # change to simulation directory
+    cd "${output_dir}" || exit
+} >>"${log_prog}" 2>&1
+
+# ANCHOR: HREMD production
+echo "- Calling mdrun"
+echo "  Number of MPI processes: ${HREMD_N_REPLICA}"
+echo "  Number of MPI processes per node: ${HREMD_N_SIM_PER_NODE}"
+echo "  Number of threads per MPI process: ${HREMD_N_THREAD_PER_SIM}"
+echo "  Using $((HREMD_N_SIM_PER_NODE * HREMD_N_THREAD_PER_SIM)) threads per node"
+echo "  Requested walltime: ${mdrun_runtime_hours} hours"
+# Run mdrun for each replica
+{
+    echo "- Calling mdrun"
+    echo "  Number of MPI processes: ${HREMD_N_REPLICA}"
+    echo "  Number of MPI processes per node: ${HREMD_N_SIM_PER_NODE}"
+    echo "  Number of threads per MPI process: ${HREMD_N_THREAD_PER_SIM}"
+    echo "  Using $((HREMD_N_SIM_PER_NODE * HREMD_N_THREAD_PER_SIM)) threads per node"
+    echo "  Requested walltime: ${mdrun_runtime_hours} hours"
+} >>"${log_mdrun}" 2>&1
+{
+    echo "- Calling mdrun"
+    echo "  Number of MPI processes: ${HREMD_N_REPLICA}"
+    echo "  Number of MPI processes per node: ${HREMD_N_SIM_PER_NODE}"
+    echo "  Number of threads per MPI process: ${HREMD_N_THREAD_PER_SIM}"
+    echo "  Using $((HREMD_N_SIM_PER_NODE * HREMD_N_THREAD_PER_SIM)) threads per node"
+    echo "  Requested walltime: ${mdrun_runtime_hours} hours"
+} >>"${log_prog}" 2>&1
+{
+    # MPI Info:
+    # Start ${HREMD_N_REPLICA} processes (-np ${HREMD_N_REPLICA}),
+    # ${HREMD_N_SIM_PER_NODE} processes per node (ppr:${HREMD_N_SIM_PER_NODE}:node),
+    # ${HREMD_N_THREAD_PER_SIM} processing elements per process (PE=${HREMD_N_THREAD_PER_SIM}),
+    # and make a thread the processing element (--use-hwthread-cpus --bind-to hwthread)
+    #
+    # GMX Info:
+    # Dynamic load balancing (dlb) is turned off (-dlb no) to prevent crashes (plumed2 Issue #410).
+    # HREMD is turned on (-hrex) and the number of replicas is set by the number of directories
+    # returned by the glob (-multidir replica_*). Metropolis exchanges are attempted every
+    # ${HREMD_N_EXCHANGE} steps (-replex ${HREMD_N_EXCHANGE}). Further Plumed information is set
+    # in the plumed.dat file (-plumed plumed.dat) inside each replica's directory. Simulations
+    # already started are continued (-cpi "${output_simulation_name}_scaled.cpt") automatically.
+    #
+    if [[ ! -f "replica_00/${output_simulation_name}_scaled.gro" ]]; then
+        # wait for file system to catch up
+        sleep '120'
+
+        # get number of threads on current node (assume it is the same for all nodes)
+        n_thread_per_node="$(nproc --all)"
+
+        # mdrun hardware settings
+        HREMD_N_SIM_PER_NODE=$(((HREMD_N_REPLICA + SLURM_JOB_NUM_NODES - 1) / SLURM_JOB_NUM_NODES)) # number of replicas run per node (ceil division)
+        HREMD_N_THREAD_PER_SIM=$((n_thread_per_node / HREMD_N_SIM_PER_NODE))                        # number of CPU threads per replica (floor division)
+
+        echo " - Beginning HREMD equilibration"
+        "${MPI_EXE}" -np "${HREMD_N_REPLICA}" \
+            --use-hwthread-cpus --bind-to 'hwthread' --report-bindings \
+            --map-by "ppr:${HREMD_N_SIM_PER_NODE}:node:PE=${HREMD_N_THREAD_PER_SIM}" \
+            "${GMX_MPI_EXE}" -quiet -nocopyright \
+            mdrun -v \
+            -maxh "${mdrun_runtime_hours}" \
+            -tunepme \
+            -pin 'on' -pinoffset '0' -pinstride '1' \
+            -multidir 'replica_'* \
+            -deffnm "${output_simulation_name}_scaled" \
+            -cpi "${output_simulation_name}_scaled.cpt" \
+            -plumed 'plumed.dat' \
+            -replex "${HREMD_N_STEPS_EXCH}" \
+            -hrex
+
+        # sleep for 120 seconds to clear cache
+        sleep '120'
+
+    else
+        echo "- Skipping mdrun (already completed)"
+    fi
+} >>"${log_mdrun}" 2>&1
+
+# ANCHOR: Check if simulation completed successfully
+{
+    if [[ ! -f "replica_00/${output_simulation_name}_scaled.gro" ]] &&
+        [[ ! -f "replica_00/2-mdrun-output/${output_simulation_name}_scaled.gro" ]]; then
+        echo ""
+        echo "WARNING: GMX mdrun production simulation failed to complete."
+        echo "         Check the log file for more information."
+        echo "         Exiting... (please rerun to continue simulation)"
+
+        # progress file
+        date_time=$(date +"%Y-%m-%d %T")
+        complete_str="  Simulation partially completed at ${date_time} on host ${HOSTNAME}"
+        echo "${complete_str}" >>"${output_dir}/progress_eqbm.txt"
+        echo "${complete_str}" >>"${base_dir}/progress_eqbm.txt"
+
+        exit 0
+
+    else
+        echo ""
+        echo "- GMX mdrun equilibration simulation completed successfully."
+    fi
+} >>"${log_prog}" 2>&1
+
+# ANCHOR: Move data
+echo "- Moving simulation data to output directories"
+{
+    # move simulation output to '2-mdrun-output' directory
+    output_simulation_dir="2-mdrun-output"
+    echo "  GMX mdrun complete: moving output files to ${output_simulation_dir} directory"
+    for i in "${arr_replica[@]}"; do
+        replica_dir="${output_dir}/replica_${i}"
+        complete_dir="${replica_dir}/${output_simulation_dir}"
+        cd "${replica_dir}" || exit
+
+        # create replica directory if it doesn't exist
+        if [[ ! -d "${complete_dir}" ]]; then
+            mkdir -p "${complete_dir}"
+            echo " - Moving replica_${i} data to ${complete_dir}"
+
+            # copy small (file size) simulation files
+            cp ./*.ndx ./*.gro \
+                -t "${output_simulation_dir}"
+
+            # move large (file size) simulation files
+            cp "${output_simulation_name}_scaled."!(gro) \
+                -t "${output_simulation_dir}"
+            rm "${output_simulation_name}_scaled."!(gro)
+
+            # move plumed simulation files
+            cp ./*.dat -t "${output_simulation_dir}"
+            rm ./*.dat
+        fi
+    done
+} >>"${log_post}" 2>&1
+{
+    echo "- Moving simulation data completed successfully"
+} >>"${log_prog}" 2>&1
+
+# ANCHOR: Clean up
+echo "- Cleaning up"
+{
+    # completion file
+    date_time=$(date +"%Y-%m-%d %T")
+    complete_str="  Simulation completed at ${date_time} on host ${HOSTNAME}"
+    echo "${complete_str}" >>"${output_dir}/completed.txt"
+    echo "${complete_str}" >>"${base_dir}/completed.txt"
+
+    # rename progress files
+    mv "${output_dir}/failed.txt" "${output_dir}/failed.txt.old" || true
+    mv "${output_dir}/progress_eqbm.txt" "${output_dir}/progress_eqbm.txt.old" || true
+    mv "${base_dir}/progress_eqbm.txt" "${base_dir}/progress_eqbm.txt.old" || true
+} >>"${log_post}" 2>&1
+{
+    echo "- Script complete"
+} >>"${log_prog}" 2>&1

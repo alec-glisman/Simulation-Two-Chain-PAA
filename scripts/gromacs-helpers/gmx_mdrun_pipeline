@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+# Created by Alec Glisman (GitHub: @alec-glisman) on April 6th, 2022
+
+# built-in shell options
+set -o errexit # exit when a command fails. Add || true to commands allowed to fail
+set -o nounset # exit when script tries to use undeclared variables
+# bash extended options
+shopt -s extglob
+
+# input checking
+if [[ "$#" -lt 14 ]]; then
+    echo "Error: gmx_mdrun_pipeline correct arguments not supplied"
+    echo "gmx_mdrun_pipeline [gmx_executable] [-p plumed_std_in] \ "
+    echo "    [input_simulation_name] [input_mdp_filepath] [input_dir] \ "
+    echo "    [output_simulation_name] [output_dir] [output_simulation_dir] \ "
+    echo "    [temperature_K] [pbc_atom_chain_A] [pbc_atom_chain_B] \ "
+    echo "    [num_warnings] [cpu_threads] [pin_offset] [gpu_ids]"
+    exit 1
+fi
+
+# MacOSX sed is different from Linux sed
+if [[ $OSTYPE == 'darwin'* ]]; then
+    sed_exe='gsed'
+else
+    sed_exe='sed'
+fi
+
+gmx_exe="${1}"
+
+# GROMACS simulation names
+input_simulation_name="${2}"
+input_mdp_filepath="${3}"
+input_dir="${4}"
+
+output_simulation_name="${5}"
+output_dir="${6}"
+output_simulation_dir="${7}"
+
+temperature_K="${8}"
+pbc_atom_chain_A="${9}"
+pbc_atom_chain_B="${10}"
+
+num_warnings="${11}"
+cpu_threads="${12}"
+pin_offset="${13}"
+gpu_ids="${14}"
+
+# parse input flags
+shift 14
+plumed_std_in=''
+while test $# -gt 0; do
+    case "$1" in
+    -p | --plumed)
+        plumed_std_in="${1} ${2}"
+        echo "Using plumed input file: ${2}"
+        shift 2
+        ;;
+    *)
+        echo "WARNING: Unknown flag: $1"
+        shift
+        ;;
+    esac
+done
+
+# internal variables
+cwd="$(pwd)"
+
+if [[ -f "${output_simulation_dir}/${output_simulation_name}.gro" ]]; then
+    echo "Simulation ${output_simulation_name} already exists, skipping..."
+
+    # visualization (do not fail on error)
+    echo "Running analysis..."
+    {
+        gmx_analysis "${gmx_exe}" "${output_simulation_dir}" . "${output_simulation_name}"
+    } || true
+
+    # copy small (file size) simulation files
+    echo "Copying files..."
+    {
+        cp mdout.mdp ./*.top ./*.itp ./*ndx \
+            "${input_simulation_name}.gro" "${output_simulation_name}.gro" \
+            -t "${output_simulation_dir}"
+    } || true
+
+    # move large (file size) simulation files
+    {
+        cp "${output_simulation_name}."!(gro) \
+            -t "${output_simulation_dir}"
+        rm "${output_simulation_name}."!(gro)
+    } || true
+
+    # change output simulation name for future
+    echo "Complete"
+    output_simulation_name="${output_simulation_dir}/${output_simulation_name}"
+
+else
+    # get copy of mdp file
+    local_mdp_file="${output_simulation_name}.mdp"
+    cp "${input_mdp_filepath}" "${local_mdp_file}"
+
+    # replace system thermostat temperature
+    "${sed_exe}" -i 's/gen-temp.*/gen-temp'" = ${temperature_K}"'/g' "${local_mdp_file}"
+    "${sed_exe}" -i 's/ref-t.*/ref-t'" = ${temperature_K} ${temperature_K}"'/g' "${local_mdp_file}"
+
+    # replace atom group parameters
+    "${sed_exe}" -i 's/pull-group1-pbcatom.*/pull-group1-pbcatom'" = ${pbc_atom_chain_A}"'/g' "${local_mdp_file}"
+    "${sed_exe}" -i 's/pull-group2-pbcatom.*/pull-group2-pbcatom'" = ${pbc_atom_chain_B}"'/g' "${local_mdp_file}"
+
+    # replace harmonic parameters
+    "${sed_exe}" -i "s/pull-coord1-init.*=.*/pull-coord1-init = ${INITIAL_Z_SPACING_NM}/g" "${local_mdp_file}"
+
+    # copy input files from previous simulation if necessary
+    file_check="${input_simulation_name}.gro"
+    if [[ "${input_dir}" != "${output_dir}" ]] && [[ ! -f "${output_dir}/${file_check}" ]]; then
+        cp "${input_dir}"/{index.ndx,"${input_simulation_name}.gro"} \
+            "${input_dir}"/*.top \
+            "${input_dir}"/*.itp \
+            -t "${output_dir}"
+    fi
+
+    # run simulation
+    # shellcheck disable=SC2086
+    gmx_mdrun "${gmx_exe}" \
+        "${cwd}" "${input_simulation_name}" "${output_simulation_name}" "${local_mdp_file}" \
+        "${num_warnings}" "${cpu_threads}" "${pin_offset}" "${gpu_ids}" \
+        $plumed_std_in
+
+    if [[ -f "${output_simulation_name}.gro" ]]; then
+        echo "Simulation complete, running analysis..."
+
+        # visualization (do not fail on error)
+        echo "Simulation complete, running analysis..."
+        {
+            gmx_analysis "${gmx_exe}" "${cwd}" "${output_simulation_dir}" "${output_simulation_name}"
+        } || true
+
+        # copy small (file size) simulation files
+        echo "Analysis complete, copying files..."
+        {
+            cp mdout.mdp ./*.top ./*.itp ./*ndx \
+                "${input_simulation_name}.gro" "${output_simulation_name}.gro" \
+                "${local_mdp_file}" \
+                -t "${output_simulation_dir}"
+        } || true
+
+        # move large (file size) simulation files
+        {
+            cp "${output_simulation_name}."!(gro) \
+                -t "${output_simulation_dir}"
+            rm "${output_simulation_name}."!(gro)
+        } || true
+
+        # remove back-up files
+        {
+            find . -name '#*#' -exec rm {} \;
+        } || true
+
+    else
+        echo "Simulation not complete, please rerun"
+        exit
+    fi
+fi

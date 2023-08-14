@@ -1,0 +1,233 @@
+#!/usr/bin/env bash
+# Created by Alec Glisman (GitHub: @alec-glisman) on March 22nd, 2022
+#
+
+# built-in shell options
+set -o errexit # exit when a command fails. Add || true to commands allowed to fail
+set -o nounset # exit when script tries to use undeclared variables
+
+# bash extended options
+shopt -s extglob
+
+# signal handling
+requeue_handler() {
+    echo "Caught SIGCONT SIGTERM, requeueing job"
+
+    # files to check
+    arr_files=("COLVAR.dat" "HILLS.dat")
+    arr_nline_header=('1' '5')
+
+    # iterate over indexes of arr_files
+    for f in "${!arr_files[@]}"; do
+
+        # check if file exists
+        if [[ -f "${arr_files[$f]}" ]]; then
+
+            # check if file has enough lines
+            n_lines=$(wc -l <"${arr_files[$f]}")
+            if [[ "${n_lines}" -gt "${arr_nline_header[$f]}" ]]; then
+                n_char=$(tail -2 "${arr_files[$f]}" | head -1 | wc -c)
+                n_char_last=$(tail -1 "${arr_files[$f]}" | wc -c)
+
+                # delete last line if corrupted
+                if [[ "${n_char}" -ne "${n_char_last}" ]]; then
+                    echo "Last line of ${arr_files[$f]} is corrupted. Deleting last line."
+                    sed -i '$d' "${arr_files[$f]}"
+                fi
+            fi
+        fi
+    done
+
+    # closing
+    echo "Job was requeued by signal $1"
+}
+trap 'requeue_handler' SIGCONT SIGTERM
+
+exit_handler() {
+    echo "Caught SIGINT SIGTERM, exiting job"
+
+    # call requeue_handler
+    requeue_handler "$@"
+
+    # closing
+    echo "Job was exited by signal $1"
+}
+trap 'exit_handler' SIGINT SIGTERM
+
+# MacOSX sed is different from Linux sed
+if [[ $OSTYPE == 'darwin'* ]]; then
+    sed_exe='gsed'
+else
+    sed_exe='sed'
+fi
+
+# allow plumed to make 10,000 backups
+export PLUMED_MAXBACKUP='10000'
+
+# ANCHOR: Script variables
+# path variables
+if [[ "${INPUT_DATA_DIR}" == '-1' ]]; then
+    base_dir="${REPO_BASE_DIR}/data/${TAG}"
+else
+    base_dir="${INPUT_DATA_DIR}"
+fi
+
+output_dir="${base_dir}/3-metad-${PRODUCTION_ENSEMBLE}-bias_${METAD_BIASFACTOR}-height_${METAD_HEIGHT}-pace_${METAD_PACE}-sigma_${METAD_SIGMA}-wall_min_${WALL_MIN}-wall_max_${WALL_MAX}-wall_force_const_${WALL_FORCE_CONST}"
+
+if [[ "${PRODUCTION_ENSEMBLE}" == "nvt" ]]; then
+    input_simulation_name="nvt_eqbm_final"
+    input_dir="${base_dir}/2-md-equilibration/3-nvt"
+
+elif [[ "${PRODUCTION_ENSEMBLE}" == "npt" ]]; then
+    input_simulation_name="npt_eqbm"
+    input_dir="${base_dir}/2-md-equilibration/2-npt"
+
+else
+    echo "ERROR: Unknown production ensemble: ${PRODUCTION_ENSEMBLE}"
+    exit 1
+fi
+
+# file paths
+output_simulation_name="${PRODUCTION_ENSEMBLE}_metad_prod"
+mdp_filename="${PARAMETERS_DIR}/metadynamics/${output_simulation_name}.mdp"
+
+# make parent directory
+mkdir -p "${output_dir}"
+cd "${output_dir}" || exit
+
+# log paths
+log_filename="standard_out_and_error.log"
+touch "${log_filename}"
+
+# copy force field
+ff_dir="${base_dir}/1-system-preparation/${FORCE_FIELD_NAME}.ff"
+if [[ ! -d "${ff_dir}" ]]; then
+    cp -rn "${base_dir}/1-system-preparation/${FORCE_FIELD_NAME}.ff" .
+fi
+
+echo ""
+echo "Starting metadynamics..."
+
+# ANCHOR: Create Plumed input file
+plumed_filename="plumed.dat"
+plumed_output_filename="COLVAR.dat"
+plumed_hills_filename="HILLS.dat"
+
+if [[ "${N_CHAINS}" == 1 ]]; then
+
+    plumed_template_dir="${REPO_BASE_DIR}/parameters/plumed-mdrun/metad-cv-cn"
+
+    if [[ "${CV_RG}" == '1' ]]; then
+        plumed_template_dir="${plumed_template_dir}-rg"
+    fi
+
+    # pdb file for molinfo
+    pdb_input_file="${base_dir}/1-system-preparation/1-structure/packmol-one-chain.pdb"
+
+elif [[ "${N_CHAINS}" == 2 ]]; then
+    pdb_input_file="${base_dir}/1-system-preparation/1-structure/packmol-two-chain.pdb"
+
+    plumed_template_dir="${REPO_BASE_DIR}/parameters/plumed-mdrun/metad-2chain-cv-comdist"
+
+else
+    echo "ERROR: N_CHAINS must be 1 or 2"
+    exit 1
+fi
+
+pdb_file="packmol_chain.pdb"
+# check if pdb file exists
+if [[ ! -f "${pdb_file}" ]]; then
+    cp -n "${pdb_input_file}" "${pdb_file}"
+fi
+
+# small ion group to bias
+if [[ "${N_CA_ION}" = "0" ]]; then
+    ion="NA"
+else
+    ion="CA"
+fi
+
+# copy template files
+if [[ "${CV_LEMKE}" == '1' ]]; then
+    plumed_template_file="${plumed_template_dir}/dimer_wtmetad_lemke.dat"
+
+elif [[ "${N_CHAINS}" == "1" ]]; then
+    if [[ "${METAD_BIASFACTOR}" == "-1" ]]; then
+        echo "Running single-chain metadynamics (MetaD)"
+        plumed_template_file="${plumed_template_dir}/one_chain_metad_cn.dat"
+    elif [[ "${METAD_BIASFACTOR}" == "0" ]]; then
+        echo "Running single-chain MD"
+        plumed_template_file="${plumed_template_dir}/one_chain_md_cn.dat"
+    else
+        echo "Running single-chain well-tempered metadynamics (WT-MetaD)"
+        plumed_template_file="${plumed_template_dir}/one_chain_wtmetad_cn.dat"
+    fi
+
+elif [[ "${N_CHAINS}" == "2" ]]; then
+    if [[ "${METAD_BIASFACTOR}" == "-1" ]]; then
+        echo "Running two-chain metadynamics (MetaD)"
+        plumed_template_file="${plumed_template_dir}/two_chain_metad_d.dat"
+    elif [[ "${METAD_BIASFACTOR}" == "0" ]]; then
+        echo "Running two-chain MD"
+        plumed_template_file="${plumed_template_dir}/two_chain_md.dat"
+    else
+        echo "Running two-chain well-tempered metadynamics (WT-MetaD)"
+        plumed_template_file="${plumed_template_dir}/two_chain_wtmetad_d.dat"
+    fi
+
+fi
+
+echo "Copying plumed template files"
+cp "${plumed_template_file}" "${plumed_filename}"
+
+# replace template parameters on plumed input file
+"${sed_exe}" -i "s/{pdb_file}/${pdb_file}/g" "${plumed_filename}"
+"${sed_exe}" -i "s#{python_exe}#${PYTHON_BIN}#g" "${plumed_filename}"
+"${sed_exe}" -i "s/{ion}/${ion}/g" "${plumed_filename}"
+"${sed_exe}" -i "s/{METAD_PACE}/${METAD_PACE}/g" "${plumed_filename}"
+"${sed_exe}" -i "s/{METAD_HEIGHT}/${METAD_HEIGHT}/g" "${plumed_filename}"
+"${sed_exe}" -i "s/{METAD_SIGMA}/${METAD_SIGMA}/g" "${plumed_filename}"
+"${sed_exe}" -i "s/{METAD_BIASFACTOR}/${METAD_BIASFACTOR}/g" "${plumed_filename}"
+"${sed_exe}" -i "s/{TEMPERATURE_K}/${TEMPERATURE_K}/g" "${plumed_filename}"
+"${sed_exe}" -i "s/{METAD_GRID_MIN}/${METAD_GRID_MIN}/g" "${plumed_filename}"
+"${sed_exe}" -i "s/{METAD_GRID_MAX}/${METAD_GRID_MAX}/g" "${plumed_filename}"
+"${sed_exe}" -i "s/{METAD_GRID_SPACING}/${METAD_GRID_SPACING}/g" "${plumed_filename}"
+"${sed_exe}" -i "s/{WALL_MIN}/${WALL_MIN}/g" "${plumed_filename}"
+"${sed_exe}" -i "s/{WALL_MAX}/${WALL_MAX}/g" "${plumed_filename}"
+"${sed_exe}" -i "s/{WALL_FORCE_CONST}/${WALL_FORCE_CONST}/g" "${plumed_filename}"
+"${sed_exe}" -i "s/{plumed_hills_filename}/${plumed_hills_filename}/g" "${plumed_filename}"
+"${sed_exe}" -i "s/{plumed_output_filename}/${plumed_output_filename}/g" "${plumed_filename}"
+
+# If we are not continuing a previous simulation, remove "RESTART" line from file
+if [[ ! -f "COLVAR.dat" ]]; then
+    echo " - Removing 'RESTART' line from plumed output file"
+    "${sed_exe}" -i '/^RESTART$/d' "${plumed_filename}"
+    "${sed_exe}" -i '/^GRID_RFILE=GRID.dat$/d' "${plumed_filename}"
+    "${sed_exe}" -i "s/RESTART=AUTO//g" "${plumed_filename}"
+else
+    echo " - Continuing previous simulation"
+fi
+
+# ANCHOR: Metadynamics production
+echo " - ${PRODUCTION_ENSEMBLE} metadynamics production"
+{
+    {
+        gmx_mdrun_pipeline "${GMX_EXE}" \
+            "${input_simulation_name}" "${mdp_filename}" "${input_dir}" \
+            "${output_simulation_name}" "${output_dir}" "1-md-${PRODUCTION_ENSEMBLE}" \
+            "${TEMPERATURE_K}" "${PBC_ATOM_CHAIN_A}" "${PBC_ATOM_CHAIN_B}" \
+            "0" "${CPU_THREADS}" "${PIN_OFFSET}" "${GPU_IDS}" \
+            --plumed "${plumed_filename}"
+    } || {
+        echo " - ${PRODUCTION_ENSEMBLE} metadynamics production failed"
+
+        # make file to indicate that the simulation has failed
+        date_time=$(date +"%Y-%m-%d %T")
+        complete_str="Simulation failed at ${date_time} on host ${HOSTNAME}"
+        echo "${complete_str}" >>"${output_dir}/failed.txt"
+        echo "${complete_str}" >>"${base_dir}/failed.txt"
+
+        # end script
+        exit 3
+    }
+} >>"${log_filename}" 2>&1

@@ -1,0 +1,9 @@
+{
+    "cSpell.enableFiletypes": [
+        "shellscript"
+    ],
+    "shellcheck.customArgs": [
+        "-x"
+    ],
+    "python.analysis.typeCheckingMode": "off"
+}

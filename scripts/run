@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# Created by Alec Glisman (GitHub: @alec-glisman) on March 8th, 2022
+#
+
+# built-in shell options
+set -o errexit # exit when a command fails. Add || true to commands allowed to fail
+set -o nounset # exit when script tries to use undeclared variables
+# bash extended options
+shopt -s extglob
+
+package='run' # name of script
+
+# input checking
+if [[ "$#" -eq 0 ]]; then
+    echo "Error: ${package} correct arguments not supplied"
+    echo "Usage: ${package} [input_file] [options]"
+    echo "See --help for more information"
+    exit 1
+fi
+
+# input flags
+path_abs="$(dirname "$(realpath "${0}")")"
+input_global_var_filename="${path_abs}/../input/shell/default.sh"
+export INPUT_DATA_DIR='-1' # OPTIONS: {-1 (default), directory_path}
+
+# simulation method flags
+MOLECULAR_DYNAMICS_FLAG='' # OPTIONS: {'' (default), 'true', 'false'}
+METADYNAMICS_FLAG=''       # OPTIONS: {'' (default), 'true', 'false'}
+HREMD_FLAG=''              # OPTIONS: {'' (default), 'true', 'false'}
+
+# simulation option flags
+all_runs_flag=''           # OPTIONS: {'' (default), 'true', 'false'}
+system_preparation_flag='' # OPTIONS: {'' (default), 'true', 'false'}
+equilibration_flag=''      # OPTIONS: {'' (default), 'true', 'false'}
+production_flag=''         # OPTIONS: {'' (default), 'true', 'false'}
+
+while test $# -gt 0; do
+    case "${1}" in
+    -h | --help)
+        echo "$package - Simulate aqueous solution of polyelectrolytes with added salt (NaCl, CaCl2)"
+        echo "using Gromacs v2022.3 patched with Plumed v2.8.1. Two chain initial configurations are"
+        echo "created using packmol."
+        echo ""
+        echo "Force fields:"
+        echo "- Poly(Acrylic Acid): AMBER GAFF"
+        echo ""
+        echo "Water model: SPC/E"
+        echo ""
+        echo "${package} [input_file] [simulation_method] [simulation_options]"
+        echo ""
+        echo "Information:"
+        echo "-h, --help                       show brief help"
+        echo ""
+        echo "Input data:"
+        echo "-g, --global-var [var_file]      input file with global variables"
+        echo "-i, --input-files [input_dir]    directory with input files"
+        echo ""
+        echo "Simulation methods:"
+        echo "-m, --molecular-dynamics         unconstrained molecular dynamics"
+        echo "-t, --metadynamics               well-tempered metadynamics"
+        echo "-r, --hremd                      hamiltonian replica exchange metadynamics"
+        echo ""
+        echo "Simulation options:"
+        echo "-a, --all                        run system preparation, equilibration, and production"
+        echo "-s, --system-preparation         prepare simulation system"
+        echo "-q, --equilibration              run NVT -> NPT -> NVT equilibration for chosen method"
+        echo "-p, --production                 run production for chosen method"
+        echo ""
+        exit 0
+        ;;
+    -g | --global-var)
+        if [[ -z "${2:-}" ]]; then
+            echo "Error: --g | --global-var correct arguments not supplied"
+            echo "See --help for more information"
+            exit 1
+        fi
+        input_global_var_filename="${2}"
+        shift 2
+        ;;
+    -i | --input-files)
+        if [[ -z "${2:-}" ]]; then
+            echo "Error: --i | --input-files correct arguments not supplied"
+            echo "See --help for more information"
+            exit 1
+        fi
+        export INPUT_DATA_DIR="${2}"
+        shift 2
+        ;;
+
+    -m | --molecular-dynamics)
+        MOLECULAR_DYNAMICS_FLAG='true'
+        shift
+        ;;
+    -t | --metadynamics)
+        METADYNAMICS_FLAG='true'
+        shift
+        ;;
+    -r | --hremd)
+        HREMD_FLAG='true'
+        shift
+        ;;
+
+    -a | --all)
+        all_runs_flag='true'
+        shift
+        ;;
+    -s | --system-preparation)
+        system_preparation_flag='true'
+        shift
+        ;;
+    -q | --equilibration)
+        equilibration_flag='true'
+        shift
+        ;;
+    -p | --production)
+        production_flag='true'
+        shift
+        ;;
+
+    *)
+        echo "Incorrect input flags"
+        echo "See --help"
+        exit 1
+        break
+        ;;
+    esac
+done
+
+# load input parameters as global
+# shellcheck disable=SC1091,SC1090
+source "${input_global_var_filename}"
+
+# Update $PATH and environment variables
+PATH="${REPO_BASE_DIR}/scripts/gromacs-helpers:${PATH}"
+PATH="${REPO_BASE_DIR}/scripts/md-production:${PATH}"
+PATH="${REPO_BASE_DIR}/scripts/md-setup:${PATH}"
+PATH="${REPO_BASE_DIR}/scripts/slurm:${PATH}"
+
+# check command line arguments before running scripts
+if ! [[ "${MOLECULAR_DYNAMICS_FLAG}" || "${METADYNAMICS_FLAG}" || "${HREMD_FLAG}" ]]; then
+    echo "ERROR: No simulation method selected"
+    echo "See --help"
+    exit 1
+fi
+if ! [[ "${all_runs_flag}" || "${system_preparation_flag}" || "${equilibration_flag}" || "${production_flag}" ]]; then
+    echo "WARNING: No simulation option selected"
+    echo "Assuming that all simulation runs are desired"
+    all_runs_flag='true'
+fi
+
+export MOLECULAR_DYNAMICS_FLAG
+export METADYNAMICS_FLAG
+export HREMD_FLAG
+
+# ANCHOR: System initialization
+if [[ "${system_preparation_flag}" || "${all_runs_flag}" ]]; then
+    system_preparation
+fi
+
+# ANCHOR: Equilibration
+if [[ "${equilibration_flag}" || "${all_runs_flag}" ]]; then
+    equilibration
+fi
+
+# ANCHOR: Production
+# Unconstrained molecular dynamics (md)
+if [[ "${production_flag}" || "${all_runs_flag}" ]] && [[ "${MOLECULAR_DYNAMICS_FLAG}" ]]; then
+    production_md
+
+# Hamiltonian replica exchange (HREMD)
+elif [[ "${production_flag}" || "${all_runs_flag}" ]] && [[ "${HREMD_FLAG}" ]]; then
+    equilibration_hremd
+    production_hremd
+
+# Metadynamics (metad)
+elif [[ "${production_flag}" || "${all_runs_flag}" ]] && [[ "${METADYNAMICS_FLAG}" ]]; then
+    production_metadynamics
+
+fi
