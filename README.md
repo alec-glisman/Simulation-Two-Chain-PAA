@@ -1,7 +1,7 @@
 # Simulation Two Chain PAA
 
-**Summary:** PLUMED-patched GROMACS molecular dynamics simulations repository used for my anti-scaling research project in the Wang Group at Caltech.  
-**Authors:** [Alec Glisman](https://github.com/alec-glisman)  
+**Summary:** PLUMED-patched GROMACS molecular dynamics simulations repository used for studying the multi-valent ion mediated interactions between two polyanions.  
+**Authors:** [Alec Glisman](https://github.com/alec-glisman), [Sriteja Mantha](https://github.com/sritejamantha)  
 **GitHub actions:**
 [![Linting](https://github.com/alec-glisman/Simulation-Two-Chain-PAA/actions/workflows/code-linting.yml/badge.svg)](https://github.com/alec-glisman/Simulation-Two-Chain-PAA/actions/workflows/code-linting.yml)  
 **Third-party services:**
