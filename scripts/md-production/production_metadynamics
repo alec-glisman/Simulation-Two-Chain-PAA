@@ -9,51 +9,6 @@ set -o nounset # exit when script tries to use undeclared variables
 # bash extended options
 shopt -s extglob
 
-# signal handling
-requeue_handler() {
-    echo "Caught SIGCONT SIGTERM, requeueing job"
-
-    # files to check
-    arr_files=("COLVAR.dat" "HILLS.dat")
-    arr_nline_header=('1' '5')
-
-    # iterate over indexes of arr_files
-    for f in "${!arr_files[@]}"; do
-
-        # check if file exists
-        if [[ -f "${arr_files[$f]}" ]]; then
-
-            # check if file has enough lines
-            n_lines=$(wc -l <"${arr_files[$f]}")
-            if [[ "${n_lines}" -gt "${arr_nline_header[$f]}" ]]; then
-                n_char=$(tail -2 "${arr_files[$f]}" | head -1 | wc -c)
-                n_char_last=$(tail -1 "${arr_files[$f]}" | wc -c)
-
-                # delete last line if corrupted
-                if [[ "${n_char}" -ne "${n_char_last}" ]]; then
-                    echo "Last line of ${arr_files[$f]} is corrupted. Deleting last line."
-                    sed -i '$d' "${arr_files[$f]}"
-                fi
-            fi
-        fi
-    done
-
-    # closing
-    echo "Job was requeued by signal $1"
-}
-trap 'requeue_handler' SIGCONT SIGTERM
-
-exit_handler() {
-    echo "Caught SIGINT SIGTERM, exiting job"
-
-    # call requeue_handler
-    requeue_handler "$@"
-
-    # closing
-    echo "Job was exited by signal $1"
-}
-trap 'exit_handler' SIGINT SIGTERM
-
 # MacOSX sed is different from Linux sed
 if [[ $OSTYPE == 'darwin'* ]]; then
     sed_exe='gsed'
@@ -148,10 +103,7 @@ else
 fi
 
 # copy template files
-if [[ "${CV_LEMKE}" == '1' ]]; then
-    plumed_template_file="${plumed_template_dir}/dimer_wtmetad_lemke.dat"
-
-elif [[ "${N_CHAINS}" == "1" ]]; then
+if [[ "${N_CHAINS}" == "1" ]]; then
     if [[ "${METAD_BIASFACTOR}" == "-1" ]]; then
         echo "Running single-chain metadynamics (MetaD)"
         plumed_template_file="${plumed_template_dir}/one_chain_metad_cn.dat"

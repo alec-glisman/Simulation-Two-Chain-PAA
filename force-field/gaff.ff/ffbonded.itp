@@ -1,7 +1,4 @@
 ; Created by Alec Glisman (GitHub: @alec-glisman) on April 24th, 2023
-; Citations
-;  - OX-CX bond length: Zolotoyabko, et al. Crystal Growth & Design 10.3 (2010): 1207-1214.
-;  - OX-OX-CX-OX improper dihedral constant: Raiteri, Demichelis, and Gale. The Journal of Physical Chemistry C 119.43 (2015): 24447-24458.
 
 [ bondtypes ]
 ;  ai       aj    funct          b0[nm]      kb [kJ/mol/nm^2]
@@ -16,7 +13,6 @@
    C3       HC        1      1.0920e-01            2.8225e+05 ; GAFF
    OC       HO        1      9.7300e-02            3.1079e+05 ; GAFF
    OH       HO        1      9.7300e-02            3.1079e+05 ; GAFF
-   OX       CX        1      1.2820e-01            5.2124e+05 ; GAFF (experimental bond length, constant from c-02)
    HW_spc   HW_spc    1      1.5136e-01            4.6275e+05 ; SPC/E
    OW_spc   HW_spc    1      9.5720e-02            4.6275e+05 ; SPC/E
 
@@ -44,7 +40,6 @@
     OS       C        O       1           1.2325e+02    6.3011e+02 ; GAFF
     OS       C3       C3      1           1.0797e+02    5.6902e+02 ; GAFF
     OS       C3       H1      1           1.0978e+02    4.2509e+02 ; GAFF
-    OX       CX       OX      1           1.2000e+02    6.7111e+02 ; GAFF (experimental bond angle, constant from o-c2-o)
     HW_spc   OW_spc   HW_spc  1           1.0452e+02    8.3680e+02 ; SPC/E
     HW_spc   HW_spc   OW_spc  1           1.2774e+02    0.0000e+02 ; SPC/E
 
@@ -88,4 +83,3 @@
     C3      O       C       O        1      180.00     4.60240                   2 ; GAFF
     C3      O       C       OH       1      180.00     4.60240                   2 ; GAFF
     C3      O       C       OS       1      180.00     4.60240                   2 ; GAFF
-    OX      OX      CX      OX       1      180.00    57.09905                   2 ; Raiteri et al. 2015

@@ -9,56 +9,6 @@ set -o nounset # exit when script tries to use undeclared variables
 # bash extended options
 shopt -s extglob
 
-# signal handling
-
-requeue_handler() {
-    echo "Caught SIGCONT SIGTERM, requeueing job"
-
-    # files to check
-    arr_files=("COLVAR.dat" "HILLS.dat")
-    arr_nline_header=('1' '5')
-
-    # iterate over indexes of arr_files
-    for f in "${!arr_files[@]}"; do
-
-        # loop over replicas
-        for d in './replica_'*; do
-
-            # check if file exists
-            if [ -f "${d}/${arr_files[$f]}" ]; then
-
-                # check if file has enough lines
-                n_lines=$(wc -l <"${arr_files[$f]}")
-                if [[ "${n_lines}" -gt "${arr_nline_header[$f]}" ]]; then
-                    n_char=$(tail -2 "${arr_files[$f]}" | head -1 | wc -c)
-                    n_char_last=$(tail -1 "${arr_files[$f]}" | wc -c)
-
-                    # delete last line if corrupted
-                    if [[ "${n_char}" -ne "${n_char_last}" ]]; then
-                        echo "Last line of ${arr_files[$f]} is corrupted. Deleting last line."
-                        sed -i '$d' "${arr_files[$f]}"
-                    fi
-                fi
-            fi
-        done
-    done
-
-    # closing
-    echo "Job was requeued by signal $1"
-}
-trap 'requeue_handler' SIGCONT SIGTERM
-
-exit_handler() {
-    echo "Caught SIGINT SIGTERM, exiting job"
-
-    # call requeue_handler
-    requeue_handler "$@"
-
-    # closing
-    echo "Job was exited by signal $1"
-}
-trap 'exit_handler' SIGINT SIGTERM
-
 # MacOSX sed is different from Linux sed
 if [[ $OSTYPE == 'darwin'* ]]; then
     sed_exe='gsed'
@@ -441,8 +391,8 @@ echo "Preprocessing the topology files"
             total_walltime_remaining_hours="$(echo "${walltime_remaining}" | awk -F: '{print $1}')"
         fi
 
-        # subtract 1 hour for safety
-        mdrun_runtime_hours="$(bc -l <<<"scale=2; ${total_walltime_remaining_hours}-1.5")"
+        # subtract 0.2 hour for safety
+        mdrun_runtime_hours="$(bc -l <<<"scale=2; ${total_walltime_remaining_hours}-0.2")"
     else
         # No walltime limit
         echo "SLURM_JOB_ID is not set"

@@ -10,6 +10,11 @@ shopt -s extglob
 
 package='run' # name of script
 
+echo "INFO: Starting ${package} script"
+echo "DEBUG: $(date)"
+echo "DEBUG: $(pwd)"
+echo "INFO: Input checking"
+
 # input checking
 if [[ "$#" -eq 0 ]]; then
     echo "Error: ${package} correct arguments not supplied"
@@ -19,8 +24,6 @@ if [[ "$#" -eq 0 ]]; then
 fi
 
 # input flags
-path_abs="$(dirname "$(realpath "${0}")")"
-input_global_var_filename="${path_abs}/../input/shell/default.sh"
 export INPUT_DATA_DIR='-1' # OPTIONS: {-1 (default), directory_path}
 
 # simulation method flags
@@ -86,7 +89,6 @@ while test $# -gt 0; do
         export INPUT_DATA_DIR="${2}"
         shift 2
         ;;
-
     -m | --molecular-dynamics)
         MOLECULAR_DYNAMICS_FLAG='true'
         shift
@@ -125,10 +127,13 @@ while test $# -gt 0; do
         ;;
     esac
 done
+echo "DEBUG: Input parsing complete"
 
 # load input parameters as global
-# shellcheck disable=SC1091,SC1090
+echo "DEBUG: Loading input parameters"
+# shellcheck source=../submission/input/2PAcr_16mer_0Ca_12nmbox.sh
 source "${input_global_var_filename}"
+echo "DEBUG: Input parameters loaded"
 
 # Update $PATH and environment variables
 PATH="${REPO_BASE_DIR}/scripts/gromacs-helpers:${PATH}"
@@ -152,13 +157,16 @@ export MOLECULAR_DYNAMICS_FLAG
 export METADYNAMICS_FLAG
 export HREMD_FLAG
 
+echo "INFO: Starting simulation"
 # ANCHOR: System initialization
 if [[ "${system_preparation_flag}" || "${all_runs_flag}" ]]; then
+    echo "INFO: Starting system_preparation..."
     system_preparation
 fi
 
 # ANCHOR: Equilibration
 if [[ "${equilibration_flag}" || "${all_runs_flag}" ]]; then
+    echo "INFO: Starting equilibration..."
     equilibration
 fi
 

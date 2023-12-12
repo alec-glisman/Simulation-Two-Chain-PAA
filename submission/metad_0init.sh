@@ -16,19 +16,10 @@
 set -o errexit # exit when a command fails
 set -o nounset # exit when script tries to use undeclared variables
 
-# signal catching
-failure_handler() {
-    echo "Caught SIGCONT SIGTERM SIGINT on sbatch submission script"
-    date_time=$(date +"%Y-%m-%d %T")
-    echo "FAILED: ${date_time}"
-}
-trap 'failure_handler' SIGCONT SIGTERM SIGINT
-
 # simulation path variables
 proj_base_dir="$(pwd)/.."
 scripts_dir="${proj_base_dir}/scripts"
 params_dir="${proj_base_dir}/submission/input"
-
 input_globals=(
     '2PAcr_16mer_0Ca_12nmbox.sh'
     '2PAcr_16mer_8Ca_12nmbox.sh'
@@ -42,7 +33,7 @@ input_globals=(
 date_time=$(date +"%Y-%m-%d %T")
 echo "START: ${date_time}"
 
-parallel --keep-order --halt-on-error '2' --jobs '2' --delay '1' \
+parallel --keep-order --halt-on-error '2' --jobs '1' --delay '1' \
     "${scripts_dir}/run" \
     --global-var "${params_dir}/{1}" \
     --metadynamics --system-preparation \

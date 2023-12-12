@@ -103,6 +103,12 @@ original_title="TITLE     Built with Packmol"
 new_title="TITLE     ${TAG} (built with Packmol)"
 "${sed_exe}" -i "s/${original_title}/${new_title}/g" "${packmol_output_pdb}"
 
+if [[ "${MONOMER}" == "Asp" ]] || [[ "${MONOMER}" == "Glu" ]]; then
+    h_flag='-ignh'
+else
+    h_flag='-noignh'
+fi
+
 # ANCHOR: generate GROMACS files from input .pdb file
 # Create gmx files from input pdb, force field, and water model
 output_simulation_name="polyelectrolyte"
@@ -115,7 +121,7 @@ output_simulation_name="polyelectrolyte"
     -ff "${force_field_name}" \
     -water "${water_model}" \
     -chainsep "id" \
-    -noignh \
+    ${h_flag} \
     -renum \
     -rtpres
 

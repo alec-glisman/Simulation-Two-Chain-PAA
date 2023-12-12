@@ -1,0 +1,93 @@
+# Allow restarting (continuing) previous simulation
+RESTART
+
+# Select groups with MDAnalysis syntax
+g_ion: GROUP NDX_FILE=index.ndx NDX_GROUP={ion}
+g_poly: GROUP NDX_FILE=index.ndx NDX_GROUP=Chain_Oxygen
+c1: GROUP NDX_FILE=index.ndx NDX_GROUP=Chain_A
+c2: GROUP NDX_FILE=index.ndx NDX_GROUP=Chain_B
+
+# Calculate total coordination number
+c_ion_poly: COORDINATION ...
+GROUPA=g_ion GROUPB=g_poly R_0=0.35 NN=8 MM=16
+NLIST NL_CUTOFF=0.5 NL_STRIDE=100
+...
+
+# treat each molecule as whole
+# rebuild molecules that are split by the periodic boundary conditions,
+# avoid discontinuities changes in the CV value and artifacts in the calculations
+WHOLEMOLECULES ENTITY0=c1, ENTITY1=c2
+
+# Compute the center of mass for chains
+cm1: COM ATOMS=c1
+cm2: COM ATOMS=c2
+
+# Compute the distance between the chain center of masses
+d12: DISTANCE ATOMS=cm1,cm2
+
+# Activate well-tempered metadynamics in com distance and coordination number
+metad: METAD ...
+# The CV we want to bias by depositing Gaussians (e.g. distance, angle, dihedral, etc)
+ARG=d12,c_ion_poly
+# The step to deposit Gaussians, the step should be large enough for the unbiased CVs to relax
+# (100-500 steps are common choices)
+PACE={METAD_PACE}
+# The height of the Gaussian [kJ/mol] (rule of the thump: ~0.1-1.0*kBT KJ/mol,
+# too low->stay trapped for long/too high->lose local minima,
+# 0.02-1.20 for distance and 1.0-2.0 for angles are commonly used values)
+HEIGHT={METAD_HEIGHT}
+# Gaussian width [nm] (sigma) should be chosen based on the CV fluctuations in unbiased run
+# try 1/2 or 1/3 of the estimated fluctuations
+# (0.5*unbiased range of variable, nm for distance & rad for angle)
+SIGMA={METAD_SIGMA}
+
+TEMP={TEMPERATURE_K}
+
+# The lower and upper bounds for the grid
+GRID_MIN={METAD_GRID_MIN}
+GRID_MAX={METAD_GRID_MAX}
+# The width of bins in the grid
+GRID_SPACING={METAD_GRID_SPACING}
+
+# Gaussians will be written to file and also stored on grid
+FILE={plumed_hills_filename}
+...
+
+# Add lower bound for com distance
+LOWER_WALLS ...
+# The CV we want to range limit
+ARG=d12
+# The position of the wall [nm]
+AT={WALL_MIN}
+# The force constant for the wall
+KAPPA={WALL_FORCE_CONST}
+# The power of the wall displacement function
+EXP=2
+# The scaling of the wall displacement coordinate [nm]
+EPS=1
+# The offset for the start of the wall [nm]
+OFFSET=0.0
+# Wall label
+LABEL=lwall
+...
+
+# Add upper bound for com distance
+UPPER_WALLS ...
+# The CV we want to range limit
+ARG=d12
+# The position of the wall [nm]
+AT={WALL_MAX}
+# The force constant for the wall
+KAPPA={WALL_FORCE_CONST}
+# The power of the wall displacement function
+EXP=2
+# The scaling of the wall displacement coordinate [nm]
+EPS=1
+# The offset for the start of the wall [nm]
+OFFSET=0.0
+# Wall label
+LABEL=uwall
+...
+
+# Print both collective variables on COLVAR file every 100 steps
+PRINT ARG=d12,c_ion_poly,metad.bias,metad.work,lwall.bias,uwall.bias FILE={plumed_output_filename} STRIDE=100

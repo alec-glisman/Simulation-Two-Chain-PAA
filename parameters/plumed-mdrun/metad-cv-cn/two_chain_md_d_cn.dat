@@ -1,0 +1,29 @@
+# Allow restarting (continuing) previous simulation
+RESTART
+
+# Select groups with MDAnalysis syntax
+g_ion: GROUP NDX_FILE=index.ndx NDX_GROUP={ion}
+g_poly: GROUP NDX_FILE=index.ndx NDX_GROUP=Chain_Oxygen
+c1: GROUP NDX_FILE=index.ndx NDX_GROUP=Chain_A
+c2: GROUP NDX_FILE=index.ndx NDX_GROUP=Chain_B
+
+# Calculate total coordination number
+c_ion_poly: COORDINATION ...
+GROUPA=g_ion GROUPB=g_poly R_0=0.35 NN=8 MM=16
+NLIST NL_CUTOFF=0.5 NL_STRIDE=100
+...
+
+# treat each molecule as whole
+# rebuild molecules that are split by the periodic boundary conditions,
+# avoid discontinuities changes in the CV value and artifacts in the calculations
+WHOLEMOLECULES ENTITY0=c1, ENTITY1=c2
+
+# Compute the center of mass for chains
+cm1: COM ATOMS=c1
+cm2: COM ATOMS=c2
+
+# Compute the distance between the chain center of masses
+d12: DISTANCE ATOMS=cm1,cm2
+
+# Print both collective variables on COLVAR file every 100 steps
+PRINT ARG=d12,c_ion_poly FILE={plumed_output_filename} STRIDE=100
