@@ -16,8 +16,8 @@ INITIAL_Z_SPACING_ANG=$(echo "${INITIAL_Z_SPACING_NM}"*10 | bc)
 export INITIAL_Z_SPACING_ANG
 
 # ions
-export N_CA_ION='0'  # [# Ca^{2+}]
 export N_NA_ION='32' # [# Na^{+}] including counterions
+export N_CA_ION='0'  # [# Ca^{2+}]
 export N_CL_ION='0'  # [# Cl^{-}]
 
 # solvent
